@@ -18,7 +18,9 @@ pnpm-debug.log*
 
 # Local service state (used when Docker is unavailable)
 .local/
-storage/
+# Anchored to the API's own runtime upload dir — an unanchored "storage/"
+# would also match apps/api/src/adapters/storage/, which is source code.
+apps/api/storage/
 
 # Playwright
 test-results/

@@ -1,0 +1,450 @@
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  IntegrationError,
+  classifyHttpStatus,
+  formatQuantity,
+  type AccountingConnection,
+  type AccountingCustomer,
+  type AccountingInvoice,
+  type AccountingPayment,
+  type AccountingPort,
+  type AccountingReferenceData,
+  type PullChangesInput,
+  type PullChangesResult,
+  type RemoteRef,
+} from '@fenwick/shared';
+import { ENV, type Env } from '../../config/env.js';
+
+/** Zoho's OAuth token endpoints return this shape for both grant types. */
+interface ZohoTokenResponse {
+  access_token?: string;
+  refresh_token?: string;
+  api_domain?: string;
+  expires_in?: number;
+}
+
+export interface ZohoOrganization {
+  readonly organizationId: string;
+  readonly name: string;
+}
+
+/**
+ * ZohoBooksAdapter.
+ *
+ * OAuth refresh, request signing, rate-limit handling and the error
+ * classification the sync worker's retry policy depends on (TDD-001 §11.2),
+ * plus the real Contact/Invoice/Customer Payment field mappings (TDD-001
+ * §10.4). voidInvoice and pullChanges are still stubs — this adapter pushes,
+ * it does not yet pull.
+ *
+ * Used directly by ZohoSyncService rather than through ACCOUNTING_PORT: the
+ * push integration always talks to Zoho specifically, regardless of which
+ * adapter ACCOUNTING_DRIVER binds for the rest of the app (fake locally).
+ */
+@Injectable()
+export class ZohoBooksAdapter implements AccountingPort {
+  readonly providerName = 'zoho-books';
+
+  private readonly logger = new Logger(ZohoBooksAdapter.name);
+
+  constructor(@Inject(ENV) private readonly env: Env) {}
+
+  // --- Transport -----------------------------------------------------------
+
+  /**
+   * Exchanges a refresh token for a new access token. Called when a request
+   * returns 401 and once ahead of a known expiry.
+   */
+  async refreshAccessToken(
+    refreshToken: string,
+  ): Promise<{ accessToken: string; expiresAt: Date }> {
+    const url = new URL('/oauth/v2/token', this.env.ZOHO_ACCOUNTS_DOMAIN);
+    url.searchParams.set('refresh_token', refreshToken);
+    url.searchParams.set('client_id', this.env.ZOHO_CLIENT_ID ?? '');
+    url.searchParams.set('client_secret', this.env.ZOHO_CLIENT_SECRET ?? '');
+    url.searchParams.set('grant_type', 'refresh_token');
+
+    const response = await fetch(url, { method: 'POST' });
+    if (!response.ok) {
+      throw await this.toIntegrationError(response, 'token refresh failed');
+    }
+
+    const body = (await response.json()) as ZohoTokenResponse;
+    if (!body.access_token) {
+      throw new IntegrationError({
+        message: 'token refresh returned no access token',
+        errorClass: 'AUTHENTICATION',
+        provider: this.providerName,
+      });
+    }
+    return {
+      accessToken: body.access_token,
+      expiresAt: new Date(Date.now() + (body.expires_in ?? 3600) * 1000),
+    };
+  }
+
+  /**
+   * The one-time authorization-code exchange that completes the OAuth
+   * connect flow. api_domain in the response is authoritative for which
+   * regional endpoint (.com/.eu/.in/...) this account actually lives on —
+   * that is how the data-center question gets answered without asking the
+   * merchant to know it themselves.
+   */
+  async exchangeAuthorizationCode(
+    code: string,
+  ): Promise<{ accessToken: string; refreshToken: string; apiDomain: string; expiresAt: Date }> {
+    const url = new URL('/oauth/v2/token', this.env.ZOHO_ACCOUNTS_DOMAIN);
+    url.searchParams.set('code', code);
+    url.searchParams.set('client_id', this.env.ZOHO_CLIENT_ID ?? '');
+    url.searchParams.set('client_secret', this.env.ZOHO_CLIENT_SECRET ?? '');
+    url.searchParams.set('redirect_uri', this.env.ZOHO_REDIRECT_URI ?? '');
+    url.searchParams.set('grant_type', 'authorization_code');
+
+    const response = await fetch(url, { method: 'POST' });
+    if (!response.ok) {
+      throw await this.toIntegrationError(response, 'authorization code exchange failed');
+    }
+
+    const body = (await response.json()) as ZohoTokenResponse;
+    if (!body.access_token || !body.refresh_token || !body.api_domain) {
+      throw new IntegrationError({
+        message: 'authorization code exchange returned an incomplete response',
+        errorClass: 'AUTHENTICATION',
+        provider: this.providerName,
+      });
+    }
+    return {
+      accessToken: body.access_token,
+      refreshToken: body.refresh_token,
+      apiDomain: body.api_domain,
+      expiresAt: new Date(Date.now() + (body.expires_in ?? 3600) * 1000),
+    };
+  }
+
+  /**
+   * Bootstrap-only call: which organizations this now-authorized account can
+   * see, so the merchant picks one before any brand-scoped request (which
+   * always needs an organization_id) becomes possible.
+   */
+  async listOrganizations(accessToken: string, apiDomain: string): Promise<ZohoOrganization[]> {
+    const url = new URL('/books/v3/organizations', apiDomain);
+    const response = await fetch(url, {
+      headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+    });
+    if (!response.ok) {
+      throw await this.toIntegrationError(response, 'GET /organizations failed');
+    }
+    const body = (await response.json()) as {
+      organizations?: Array<{ organization_id: string; name: string }>;
+    };
+    return (body.organizations ?? []).map((org) => ({
+      organizationId: org.organization_id,
+      name: org.name,
+    }));
+  }
+
+  /**
+   * One request against the Books API, with Zoho's errors mapped onto the
+   * platform's classification so the worker knows whether to retry, halt the
+   * brand's stream, or dead-letter.
+   */
+  async request<T>(
+    connection: AccountingConnection,
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    path: string,
+    options: { query?: Record<string, string>; body?: unknown } = {},
+  ): Promise<T> {
+    const url = new URL(path, this.env.ZOHO_API_DOMAIN);
+    url.searchParams.set('organization_id', connection.organisationId);
+    for (const [key, value] of Object.entries(options.query ?? {})) {
+      url.searchParams.set(key, value);
+    }
+
+    const response = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Zoho-oauthtoken ${connection.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    });
+
+    if (!response.ok) {
+      throw await this.toIntegrationError(response, `${method} ${path}`);
+    }
+    return (await response.json()) as T;
+  }
+
+  private async toIntegrationError(response: Response, context: string): Promise<IntegrationError> {
+    const text = await response.text().catch(() => '');
+    let providerMessage = text;
+    let providerCode: string | undefined;
+
+    try {
+      const parsed = JSON.parse(text) as { message?: string; code?: number };
+      providerMessage = parsed.message ?? text;
+      providerCode = parsed.code === undefined ? undefined : String(parsed.code);
+    } catch {
+      // Leave the raw body as the provider message.
+    }
+
+    // Zoho signals rate limiting with 429 and a Retry-After header.
+    const retryAfter = response.headers.get('retry-after');
+
+    return new IntegrationError({
+      message: `Zoho Books: ${context} failed with ${response.status}`,
+      errorClass: classifyHttpStatus(response.status),
+      provider: this.providerName,
+      providerMessage,
+      providerCode,
+      httpStatus: response.status,
+      retryAfterMs: retryAfter ? Number(retryAfter) * 1000 : undefined,
+    });
+  }
+
+  async ping(connection: AccountingConnection): Promise<boolean> {
+    await this.request(connection, 'GET', '/books/v3/organizations');
+    return true;
+  }
+
+  async pullReferenceData(connection: AccountingConnection): Promise<AccountingReferenceData> {
+    const body = await this.request<{
+      taxes?: Array<{ tax_id: string; tax_name: string; tax_percentage: number; status?: string }>;
+    }>(connection, 'GET', '/books/v3/settings/taxes');
+
+    return {
+      taxRates: (body.taxes ?? []).map((tax) => ({
+        remoteId: tax.tax_id,
+        label: tax.tax_name,
+        // Percentage to basis points. Zoho returns a decimal percentage; the
+        // rounding here is the only place a rate crosses from decimal to
+        // integer, and it happens once, at the boundary.
+        rateBp: Math.round(tax.tax_percentage * 100),
+        active: tax.status !== 'inactive',
+      })),
+      currencies: ['USD'],
+    };
+  }
+
+  // --- Object mapping (FR-ZHO, TDD-001 §10.4) -------------------------------
+
+  /**
+   * contact_name is Zoho's required display field; company_name is separate
+   * and optional (confirmed against the real Create Contact reference, not
+   * assumed). An individual has no company_name, so contact_name always
+   * carries our displayName — that is what search and every Zoho UI list
+   * shows regardless of type.
+   *
+   * Duplicate-match on existing email is intentionally NOT attempted here:
+   * silently merging into a contact this push did not create risks attaching
+   * our invoices to the wrong customer. remoteId absent means create; present
+   * means update; anything else is a conflict for an operator, not a guess.
+   */
+  async upsertCustomer(
+    connection: AccountingConnection,
+    customer: AccountingCustomer,
+  ): Promise<RemoteRef> {
+    const payload = {
+      contact_name: customer.displayName,
+      company_name: customer.companyName ?? undefined,
+      contact_type: 'customer',
+      customer_sub_type: customer.type === 'BUSINESS' ? 'business' : 'individual',
+      email: customer.email ?? undefined,
+      phone: customer.phone ?? undefined,
+      billing_address: customer.billingAddress ? this.toZohoAddress(customer.billingAddress) : undefined,
+      shipping_address: customer.shippingAddress ? this.toZohoAddress(customer.shippingAddress) : undefined,
+    };
+
+    const body = customer.remoteId
+      ? await this.request<{ contact: { contact_id: string; last_modified_time?: string } }>(
+          connection,
+          'PUT',
+          `/books/v3/contacts/${customer.remoteId}`,
+          { body: payload },
+        )
+      : await this.request<{ contact: { contact_id: string; last_modified_time?: string } }>(
+          connection,
+          'POST',
+          '/books/v3/contacts',
+          { body: payload },
+        );
+
+    return { remoteId: body.contact.contact_id, updatedAt: this.parseZohoTimestamp(body.contact.last_modified_time) };
+  }
+
+  /**
+   * Card fee representation (the open question this method used to name) is
+   * resolved as: push it as its own plain line item, always — not a Zoho
+   * "fee" construct, because whether it is a merchant cost or a customer
+   * surcharge is FRS-001 Q-01, still unanswered, and a line item is neutral
+   * to that question either way. Same treatment for tax when the invoice
+   * carries no remoteTaxId (no synced TaxRate yet): a plain line, so the
+   * pushed total still reconciles exactly, rather than silently dropping it
+   * because Zoho's own tax engine has nothing to reference.
+   */
+  async pushInvoice(connection: AccountingConnection, invoice: AccountingInvoice): Promise<RemoteRef> {
+    const lineItems = invoice.lines.map((line) => ({
+      name: line.name,
+      description: line.description ?? undefined,
+      rate: this.minorToDecimal(line.unitPriceMinor),
+      quantity: Number(formatQuantity(line.quantity)),
+      tax_id: line.taxExempt ? undefined : (line.remoteTaxId ?? undefined),
+    }));
+
+    // No remoteTaxId anywhere on the invoice: represent the already-computed
+    // tax as a visible, zero-quantity-priced line rather than a silent gap.
+    if (invoice.taxMinor > 0 && invoice.lines.every((l) => !l.remoteTaxId)) {
+      lineItems.push({
+        name: 'Tax',
+        description: `Tax at the rate applied when this invoice was issued (${(invoice.taxRateBpApplied / 100).toFixed(2)}%)`,
+        rate: this.minorToDecimal(invoice.taxMinor),
+        quantity: 1,
+        tax_id: undefined,
+      });
+    }
+    if (invoice.cardFeeMinor > 0) {
+      lineItems.push({
+        name: 'Card processing fee',
+        description: 'Applied because this invoice was paid by card or digital wallet',
+        rate: this.minorToDecimal(invoice.cardFeeMinor),
+        quantity: 1,
+        tax_id: undefined,
+      });
+    }
+
+    const payload = {
+      customer_id: invoice.customerRemoteId,
+      invoice_number: invoice.number,
+      date: this.toZohoDate(invoice.invoiceDate),
+      due_date: this.toZohoDate(invoice.dueDate),
+      line_items: lineItems,
+      notes: invoice.notes ?? undefined,
+    };
+
+    const body = invoice.remoteId
+      ? await this.request<{ invoice: { invoice_id: string; last_modified_time?: string } }>(
+          connection,
+          'PUT',
+          `/books/v3/invoices/${invoice.remoteId}`,
+          { body: payload },
+        )
+      : await this.request<{ invoice: { invoice_id: string; last_modified_time?: string } }>(
+          connection,
+          'POST',
+          '/books/v3/invoices',
+          { body: payload },
+        );
+
+    return { remoteId: body.invoice.invoice_id, updatedAt: this.parseZohoTimestamp(body.invoice.last_modified_time) };
+  }
+
+  /**
+   * payment_mode is Zoho's fixed enum (check/cash/creditcard/banktransfer/
+   * bankremittance/autotransaction/others) — our PaymentMethod values are
+   * mapped onto it in mapPaymentMode below rather than passed through, since
+   * the two vocabularies do not match one-for-one (WALLET has no dedicated
+   * mode in Zoho and settles as creditcard for accounting purposes).
+   */
+  async pushPayment(connection: AccountingConnection, payment: AccountingPayment): Promise<RemoteRef> {
+    const payload = {
+      customer_id: payment.customerRemoteId,
+      payment_mode: this.mapPaymentMode(payment.method),
+      amount: this.minorToDecimal(payment.amountMinor),
+      date: this.toZohoDate(payment.settledAt),
+      reference_number: payment.reference ?? undefined,
+      invoices: [
+        {
+          invoice_id: payment.invoiceRemoteId,
+          amount_applied: this.minorToDecimal(payment.amountMinor),
+        },
+      ],
+    };
+
+    const body = await this.request<{ payment: { payment_id: string } }>(
+      connection,
+      'POST',
+      '/books/v3/customerpayments',
+      { body: payload },
+    );
+    return { remoteId: body.payment.payment_id };
+  }
+
+  private mapPaymentMode(method: string): string {
+    switch (method) {
+      case 'CARD':
+      case 'WALLET':
+        return 'creditcard';
+      case 'ACH':
+        return 'banktransfer';
+      case 'CHECK':
+        return 'check';
+      default:
+        return 'others';
+    }
+  }
+
+  private minorToDecimal(minor: number): number {
+    // Every currency this platform supports (USD/CAD/EUR/GBP) has 2 decimal
+    // places — the one conversion point between our integer minor units and
+    // the plain JSON number Zoho's API contract requires (TDD-001 §9.1: this
+    // is the boundary, never an intermediate step).
+    return Number((minor / 100).toFixed(2));
+  }
+
+  private toZohoDate(date: Date): string {
+    return date.toISOString().slice(0, 10);
+  }
+
+  private parseZohoTimestamp(value: string | undefined): Date | null {
+    return value ? new Date(value) : null;
+  }
+
+  private toZohoAddress(address: {
+    line1: string | null;
+    line2: string | null;
+    city: string | null;
+    region: string | null;
+    postalCode: string | null;
+    country: string | null;
+  }): Record<string, string | undefined> {
+    return {
+      address: address.line1 ?? undefined,
+      street2: address.line2 ?? undefined,
+      city: address.city ?? undefined,
+      state: address.region ?? undefined,
+      zip: address.postalCode ?? undefined,
+      country: address.country ?? undefined,
+    };
+  }
+
+  voidInvoice(_connection: AccountingConnection, _remoteInvoiceId: string): Promise<void> {
+    return Promise.reject(
+      this.mappingPending(
+        'voidInvoice',
+        'whether a cancelled invoice should void or delete in Zoho',
+      ),
+    );
+  }
+
+  pullChanges(
+    _connection: AccountingConnection,
+    _input: PullChangesInput,
+  ): Promise<PullChangesResult> {
+    return Promise.reject(
+      this.mappingPending(
+        'pullChanges',
+        'whether change detection uses last_modified_time polling or Zoho webhooks',
+      ),
+    );
+  }
+
+  private mappingPending(operation: string, question: string): IntegrationError {
+    return new IntegrationError({
+      message:
+        `ZohoBooksAdapter.${operation} is not implemented. Open question: ${question}. ` +
+        `Transport, auth and error classification are in place; only the field mapping is outstanding.`,
+      errorClass: 'PERMANENT',
+      provider: this.providerName,
+    });
+  }
+}
