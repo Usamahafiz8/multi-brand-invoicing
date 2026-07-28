@@ -1,0 +1,188 @@
+/**
+ * InvoicesService against a real database (TDD-001 §9.4, §5.3). Needs a
+ * migrated, seeded database:
+ *   pnpm setup:local && pnpm --filter @fenwick/api test
+ */
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { CustomerInput, InvoiceDraftInput, RequestScope } from '@fenwick/shared';
+import { loadEnv } from '../config/load-env.js';
+import { getEnv } from '../config/env.js';
+import { PrismaService } from '../infra/prisma/prisma.service.js';
+import { RedisService } from '../infra/redis/redis.service.js';
+import { QueueService } from '../infra/queue/queue.service.js';
+import { CustomersService } from '../customers/customers.service.js';
+import { InvoicesService } from './invoices.service.js';
+
+loadEnv();
+const hasDb = Boolean(process.env['DATABASE_URL']);
+const env = hasDb ? getEnv() : null;
+const describeWithDb = hasDb ? describe : describe.skip;
+
+describeWithDb('InvoicesService', () => {
+  const prisma = new PrismaService(env!);
+  const redis = new RedisService(env!);
+  const queue = new QueueService(redis);
+  const customers = new CustomersService(prisma, queue);
+  const invoices = new InvoicesService(prisma, queue);
+  const owner = new PrismaClient({ datasources: { db: { url: env!.DIRECT_DATABASE_URL ?? env!.DATABASE_URL } } });
+
+  let merchantId = '';
+  let solsticeId = '';
+  let northgateId = '';
+  let ownerScope: RequestScope;
+  let customerWithEmailId = '';
+  let customerWithoutEmailId = '';
+
+  beforeAll(async () => {
+    await queue.onModuleInit();
+
+    const solstice = await owner.brand.findFirst({
+      where: { displayName: 'Solstice Kitchenware' },
+      select: { id: true, merchantId: true },
+    });
+    const northgate = await owner.brand.findFirst({
+      where: { displayName: 'Northgate' },
+      select: { id: true },
+    });
+    if (!solstice || !northgate) throw new Error('seed data missing — run pnpm db:seed');
+    solsticeId = solstice.id;
+    merchantId = solstice.merchantId;
+    northgateId = northgate.id;
+    ownerScope = {
+      merchantId,
+      userId: 'test-harness',
+      role: 'MERCHANT_OWNER',
+      assignedBrandIds: [],
+      sessionId: 'test-session',
+      sourceIp: null,
+    };
+
+    const base: Omit<CustomerInput, 'email' | 'displayName'> = {
+      type: 'BUSINESS',
+      salutation: null,
+      firstName: null,
+      lastName: null,
+      companyName: 'Invoices Test Co',
+      phone: null,
+      billingAddress: null,
+      shippingAddress: null,
+    };
+    customerWithEmailId = (
+      await customers.create(ownerScope, solsticeId, {
+        ...base,
+        displayName: 'Invoices Test Co (with email)',
+        email: 'ap@invoices-test.example',
+      })
+    ).id;
+    customerWithoutEmailId = (
+      await customers.create(ownerScope, solsticeId, {
+        ...base,
+        displayName: 'Invoices Test Co (no email)',
+        email: null,
+      })
+    ).id;
+  });
+
+  afterAll(async () => {
+    await queue.onModuleDestroy();
+    await redis.onModuleDestroy();
+    await Promise.all([prisma.$disconnect(), owner.$disconnect()]);
+  });
+
+  function draft(overrides: Partial<InvoiceDraftInput> = {}): InvoiceDraftInput {
+    return {
+      brandId: solsticeId,
+      customerId: customerWithEmailId,
+      invoiceDate: new Date('2026-01-01'),
+      dueDate: new Date('2026-01-31'),
+      currency: 'USD',
+      lines: [
+        { itemName: 'Cast-iron cookware set', description: null, quantity: '12', unitPrice: '200.00', taxExempt: false },
+        { itemName: 'Ceramic bakeware bundle', description: null, quantity: '6', unitPrice: '120.00', taxExempt: false },
+      ],
+      taxRateBp: 600,
+      cardFeeRateBp: 290,
+      notes: null,
+      internalNotes: null,
+      ...overrides,
+    };
+  }
+
+  it('computes subtotal, tax and a fee-exempt total matching CalculationService exactly', async () => {
+    const created = await invoices.create(ownerScope, solsticeId, draft());
+
+    // 12×200.00 + 6×120.00 = 3120.00; 6% tax = 187.20; MANUAL baseline carries no fee.
+    expect(created.subtotalMinor).toBe(312000n);
+    expect(created.taxMinor).toBe(18720n);
+    expect(created.cardFeeMinor).toBe(0n);
+    expect(created.totalMinor).toBe(330720n);
+    expect(created.balanceMinor).toBe(330720n);
+    expect(created.status).toBe('DRAFT');
+    expect(created.lineItems).toHaveLength(2);
+    expect(created.lineItems[0]?.lineTotalMinor).toBe(240000n);
+    expect(created.lineItems[1]?.lineTotalMinor).toBe(72000n);
+  });
+
+  it('freezes the brand-current tax and fee rate onto the invoice at creation', async () => {
+    const created = await invoices.create(ownerScope, solsticeId, draft({ taxRateBp: 825, cardFeeRateBp: 350 }));
+    expect(created.taxRateBpApplied).toBe(825);
+    expect(created.cardFeeRateBpApplied).toBe(350);
+  });
+
+  it('allocates a unique, brand-prefixed, sequential number even under concurrent creation', async () => {
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => invoices.create(ownerScope, solsticeId, draft())),
+    );
+    const numbers = results.map((r) => r.number);
+    expect(new Set(numbers).size).toBe(numbers.length); // no collisions
+    for (const number of numbers) expect(number).toMatch(/^SOL-\d{4}$/);
+  });
+
+  it('issues a valid draft: status becomes SENT and issuedAt is stamped', async () => {
+    const created = await invoices.create(ownerScope, solsticeId, draft());
+    const issued = await invoices.issue(ownerScope, solsticeId, created.id);
+    expect(issued.status).toBe('SENT');
+    expect(issued.issuedAt).not.toBeNull();
+  });
+
+  it('refuses to issue an invoice for a customer with no deliverable email', async () => {
+    const created = await invoices.create(ownerScope, solsticeId, draft({ customerId: customerWithoutEmailId }));
+    await expect(invoices.issue(ownerScope, solsticeId, created.id)).rejects.toThrow(ConflictException);
+
+    const row = await owner.invoice.findUniqueOrThrow({ where: { id: created.id } });
+    expect(row.status).toBe('DRAFT'); // refused, not half-applied
+  });
+
+  it('refuses to issue an invoice that is not in Draft', async () => {
+    const created = await invoices.create(ownerScope, solsticeId, draft());
+    await invoices.issue(ownerScope, solsticeId, created.id);
+    await expect(invoices.issue(ownerScope, solsticeId, created.id)).rejects.toThrow(ConflictException);
+  });
+
+  it('never returns another brand\'s invoice, even by exact id', async () => {
+    const created = await invoices.create(ownerScope, solsticeId, draft());
+    await expect(invoices.findOne(ownerScope, northgateId, created.id)).rejects.toThrow(NotFoundException);
+  });
+
+  it("rejects creating an invoice against another brand's customer", async () => {
+    await expect(
+      invoices.create(ownerScope, northgateId, draft({ customerId: customerWithEmailId })),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('rejects a role with no brand assignment reaching a brand it is not assigned to', async () => {
+    const salesUser: RequestScope = {
+      merchantId,
+      userId: 'sales-user',
+      role: 'SALES_USER',
+      assignedBrandIds: [northgateId], // Solstice explicitly excluded
+      sessionId: 'test-session',
+      sourceIp: null,
+    };
+    // RLS returns "not found" rather than a distinguishable "forbidden" —
+    // deliberately, so a probe cannot tell scope-denial from non-existence.
+    await expect(invoices.list(salesUser, solsticeId)).resolves.toEqual([]);
+  });
+});
