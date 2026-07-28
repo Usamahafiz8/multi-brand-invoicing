@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand: #2d6a6a;
+  --brand-foreground: #ffffff;
+  --brand-ink: #2d6a6a;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: theme('colors.canvas');
+  color: theme('colors.ink');
+  font-family: theme('fontFamily.sans');
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
