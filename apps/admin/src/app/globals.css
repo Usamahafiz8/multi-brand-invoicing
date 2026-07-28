@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Brand custom properties are set per request by <BrandTheme>, computed from
+ * the brand's colour with an accessible foreground (NFR-USE-004). These are the
+ * fallbacks used before a brand is selected.
+ */
+:root {
+  --brand: #2d6a6a;
+  --brand-foreground: #ffffff;
+  --brand-ink: #2d6a6a;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: theme('colors.canvas');
+  color: theme('colors.ink');
+  font-family: theme('fontFamily.sans');
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Visible focus is a requirement, not a preference. */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
