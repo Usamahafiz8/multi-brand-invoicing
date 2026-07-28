@@ -1,0 +1,27 @@
+# The two most expensive failure modes on this project are a missing
+# authorisation check and a money arithmetic defect (TER-001 §4). Requiring a
+# named reviewer on exactly those paths is a cheap control that survives team
+# turnover in a way a review checklist does not.
+
+# Default
+*                                       @fenwick/engineering
+
+# Money. A defect here is a financial defect, not a rendering glitch.
+/packages/shared/src/money/             @fenwick/engineering-leads @fenwick/security
+
+# Authorisation, tenancy and the permission matrix.
+/packages/shared/src/domain/roles.ts    @fenwick/engineering-leads @fenwick/security
+/packages/shared/src/tenancy.ts         @fenwick/engineering-leads @fenwick/security
+/apps/api/src/tenancy/                  @fenwick/engineering-leads @fenwick/security
+/apps/api/src/auth/                     @fenwick/engineering-leads @fenwick/security
+
+# Row-level security policies and grants.
+/apps/api/prisma/migrations/            @fenwick/engineering-leads @fenwick/security
+
+# The public payment application. Every dependency change here is a PCI scope
+# question, so the dependency manifest gets the same treatment as the code.
+/apps/payment/                          @fenwick/engineering-leads @fenwick/security
+/apps/payment/package.json              @fenwick/engineering-leads @fenwick/security
+
+# Gateway adapters.
+/apps/api/src/adapters/gateway/         @fenwick/engineering-leads @fenwick/security

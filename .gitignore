@@ -1,0 +1,29 @@
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+.DS_Store
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Local service state (used when Docker is unavailable)
+.local/
+storage/
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+
+# Local Claude Code session config — machine-specific, not project source.
+.claude/

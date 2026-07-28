@@ -1,0 +1,19 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Build scripts are opt-in (pnpm >= 10). Each entry is a deliberate decision:
+# a package that runs code at install time is a supply-chain surface.
+allowBuilds:
+  esbuild: true # vitest and next bundling
+  '@prisma/client': true # generates the typed client
+  prisma: true # engine download
+  '@prisma/engines': true
+  '@nestjs/core': true # nestjs post-install banner
+  sharp: true # next/image optimisation
+  '@tailwindcss/oxide': true
+  bcrypt: true
+  unrs-resolver: true
+  # Optional native accelerator for msgpackr (BullMQ). The pure-JS path is fast
+  # enough at this load and avoids a native build in every environment.
+  msgpackr-extract: false
