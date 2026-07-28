@@ -1,0 +1,51 @@
+{
+  "name": "@fenwick/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Modular monolith API and workers for the Fenwick invoicing platform.",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "node ../../scripts/with-env.mjs nest start --watch",
+    "dev:worker": "node ../../scripts/with-env.mjs nest start --watch --entryFile worker",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "start:worker": "node dist/worker.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src --max-warnings 0",
+    "db:generate": "prisma generate",
+    "db:migrate": "node ../../scripts/with-env.mjs prisma migrate deploy && prisma generate",
+    "db:migrate:dev": "node ../../scripts/with-env.mjs prisma migrate dev",
+    "db:reset": "node ../../scripts/with-env.mjs prisma migrate reset --force",
+    "db:seed": "node ../../scripts/with-env.mjs tsx prisma/seed.ts",
+    "db:studio": "node ../../scripts/with-env.mjs prisma studio"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.717.0",
+    "@aws-sdk/s3-request-presigner": "^3.717.0",
+    "@fenwick/shared": "workspace:*",
+    "@nestjs/common": "^10.4.15",
+    "@nestjs/core": "^10.4.15",
+    "@nestjs/platform-express": "^10.4.15",
+    "@prisma/client": "^5.22.0",
+    "bullmq": "^5.34.5",
+    "ioredis": "^5.4.2",
+    "nodemailer": "^6.9.16",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.4.9",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.10.2",
+    "@types/nodemailer": "^6.4.17",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
