@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { BrandTheme } from '@/components/brand-theme';
 import { ApiError, getZohoActivity, getZohoStatus, listBrands, type Brand, type ZohoActivityEntry } from '@/lib/api';
+import { ActivityFeed } from './activity-feed';
 import { backfillZohoAction, pullZohoAction } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -207,47 +208,8 @@ export default async function ZohoSettingsPage({
               )
             )}
 
-            {activeBrand && activity.length > 0 && (
-              <section className="mt-6 rounded-lg border border-border bg-surface shadow-sm">
-                <div className="border-b border-border px-5 py-3">
-                  <h2 className="font-medium text-ink-strong">Recent activity</h2>
-                  <p className="mt-0.5 text-xs text-ink-muted">
-                    Every push and pull attempt, most recent first — Zoho&apos;s own message,
-                    verbatim, when one failed. This is what actually happened, not a summary.
-                  </p>
-                </div>
-                <ul className="divide-y divide-border">
-                  {activity.map((entry, i) => (
-                    <li key={i} className="px-5 py-3 text-sm">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="font-medium text-ink-strong">
-                          {entry.direction === 'PUSH' ? '↑ Push' : '↓ Pull'} {entry.objectType.toLowerCase()}
-                        </span>
-                        <span
-                          className={
-                            entry.status === 'SUCCEEDED'
-                              ? 'text-xs font-medium text-success'
-                              : entry.status === 'FAILED' || entry.status === 'DEAD_LETTERED'
-                                ? 'text-xs font-medium text-danger'
-                                : 'text-xs font-medium text-ink-muted'
-                          }
-                        >
-                          {entry.status}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 flex items-center justify-between gap-3 text-xs text-ink-muted">
-                        <span>{new Date(entry.updatedAt).toLocaleString()}</span>
-                        {entry.errorClass && <span className="font-mono">{entry.errorClass}</span>}
-                      </div>
-                      {entry.lastError && (
-                        <p className="mt-1 rounded-md bg-danger-surface px-2 py-1 font-mono text-xs text-danger">
-                          {entry.lastError}
-                        </p>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </section>
+            {activeBrand && status.connected && (
+              <ActivityFeed brandId={activeBrand.id} initial={activity} />
             )}
           </>
         )}
