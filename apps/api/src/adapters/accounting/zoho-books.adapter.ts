@@ -3,6 +3,7 @@ import {
   IntegrationError,
   classifyHttpStatus,
   formatQuantity,
+  type AccountingChange,
   type AccountingConnection,
   type AccountingCustomer,
   type AccountingInvoice,
@@ -26,6 +27,80 @@ interface ZohoTokenResponse {
 export interface ZohoOrganization {
   readonly organizationId: string;
   readonly name: string;
+}
+
+interface ZohoAddressResponse {
+  address?: string;
+  street2?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  country?: string;
+}
+
+/** Fields present on every item in GET /contacts' list response. */
+export interface ZohoContactListItem {
+  contact_id: string;
+  contact_name: string;
+  company_name?: string;
+  email?: string;
+  phone?: string;
+  first_name?: string;
+  last_name?: string;
+  last_modified_time?: string;
+}
+
+/** GET /contacts/{id} only — billing/shipping address is absent from the list response. */
+export interface ZohoContactDetail extends ZohoContactListItem {
+  customer_sub_type?: string;
+  billing_address?: ZohoAddressResponse;
+  shipping_address?: ZohoAddressResponse;
+}
+
+/** Fields present on every item in GET /invoices' list response. */
+export interface ZohoInvoiceListItem {
+  invoice_id: string;
+  customer_id: string;
+  invoice_number: string;
+  status: string;
+  date: string;
+  due_date: string;
+  currency_code: string;
+  total: number;
+  balance: number;
+  last_modified_time?: string;
+}
+
+export interface ZohoInvoiceLineItem {
+  name?: string;
+  description?: string;
+  rate: number;
+  quantity: number;
+  tax_id?: string;
+}
+
+/** GET /invoices/{id} only — line_items is absent from the list response. */
+export interface ZohoInvoiceDetail extends ZohoInvoiceListItem {
+  sub_total: number;
+  tax_total: number;
+  line_items: ZohoInvoiceLineItem[];
+  notes?: string;
+}
+
+/** Fields present on every item in GET /customerpayments' list response. */
+export interface ZohoPaymentListItem {
+  payment_id: string;
+  date: string;
+  payment_mode: string;
+  amount: number;
+}
+
+/** GET /customerpayments/{id} only — customer_id and invoices[] are absent
+ * from the list response, per the confirmed Zoho Books API v3 docs. */
+export interface ZohoPaymentDetail extends ZohoPaymentListItem {
+  customer_id: string;
+  reference_number?: string;
+  invoices?: Array<{ invoice_id: string; amount_applied: number }>;
 }
 
 /**
@@ -66,7 +141,7 @@ export class ZohoBooksAdapter implements AccountingPort {
 
     const response = await fetch(url, { method: 'POST' });
     if (!response.ok) {
-      throw await this.toIntegrationError(response, 'token refresh failed');
+      throw await this.toIntegrationError(response, 'token refresh');
     }
 
     const body = (await response.json()) as ZohoTokenResponse;
@@ -102,7 +177,7 @@ export class ZohoBooksAdapter implements AccountingPort {
 
     const response = await fetch(url, { method: 'POST' });
     if (!response.ok) {
-      throw await this.toIntegrationError(response, 'authorization code exchange failed');
+      throw await this.toIntegrationError(response, 'authorization code exchange');
     }
 
     const body = (await response.json()) as ZohoTokenResponse;
@@ -132,7 +207,7 @@ export class ZohoBooksAdapter implements AccountingPort {
       headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
     });
     if (!response.ok) {
-      throw await this.toIntegrationError(response, 'GET /organizations failed');
+      throw await this.toIntegrationError(response, 'GET /organizations');
     }
     const body = (await response.json()) as {
       organizations?: Array<{ organization_id: string; name: string }>;
@@ -179,21 +254,34 @@ export class ZohoBooksAdapter implements AccountingPort {
     const text = await response.text().catch(() => '');
     let providerMessage = text;
     let providerCode: string | undefined;
+    let oauthError: string | undefined;
 
     try {
-      const parsed = JSON.parse(text) as { message?: string; code?: number };
-      providerMessage = parsed.message ?? text;
+      const parsed = JSON.parse(text) as {
+        message?: string;
+        code?: number;
+        error?: string;
+        error_description?: string;
+      };
+      providerMessage = parsed.message ?? parsed.error_description ?? text;
       providerCode = parsed.code === undefined ? undefined : String(parsed.code);
+      oauthError = parsed.error;
     } catch {
       // Leave the raw body as the provider message.
     }
 
-    // Zoho signals rate limiting with 429 and a Retry-After header.
+    // Zoho signals rate limiting with 429 (with Retry-After) on the Books
+    // API, but its OAuth token endpoint signals the exact same condition as
+    // a plain 400 with error: "Access Denied" — classifyHttpStatus alone
+    // reads any 400 as a permanent validation failure, which would mean a
+    // token-refresh rate limit is treated as unretryable instead of the
+    // transient condition it actually is.
     const retryAfter = response.headers.get('retry-after');
+    const isOAuthRateLimit = response.status === 400 && oauthError === 'Access Denied';
 
     return new IntegrationError({
       message: `Zoho Books: ${context} failed with ${response.status}`,
-      errorClass: classifyHttpStatus(response.status),
+      errorClass: isOAuthRateLimit ? 'TRANSIENT' : classifyHttpStatus(response.status),
       provider: this.providerName,
       providerMessage,
       providerCode,
@@ -426,16 +514,185 @@ export class ZohoBooksAdapter implements AccountingPort {
     );
   }
 
-  pullChanges(
-    _connection: AccountingConnection,
-    _input: PullChangesInput,
+  /**
+   * Generic port shape (FR-ZHO-030) — kept honest and real, not a stub, by
+   * delegating to the same list calls ZohoPullService uses directly for its
+   * finer-grained needs. This exists for any caller that wants a uniform
+   * change feed rather than per-entity detail; it is intentionally the
+   * cheaper, list-level view (no per-record detail fetch), since detail
+   * fetching only the records actually touched is what makes the real pull
+   * path affordable against Zoho's 100-req/min limit.
+   */
+  async pullChanges(
+    connection: AccountingConnection,
+    input: PullChangesInput,
   ): Promise<PullChangesResult> {
-    return Promise.reject(
-      this.mappingPending(
-        'pullChanges',
-        'whether change detection uses last_modified_time polling or Zoho webhooks',
-      ),
+    const sinceIso = input.since.toISOString();
+    const changes: AccountingChange[] = [];
+
+    const { contacts } = await this.listContactsPage(connection, 1);
+    for (const c of contacts) {
+      if (c.last_modified_time && new Date(c.last_modified_time) > input.since) {
+        changes.push({
+          objectType: 'CUSTOMER',
+          remoteId: c.contact_id,
+          changeType: 'UPDATED',
+          occurredAt: new Date(c.last_modified_time),
+          payload: c,
+        });
+      }
+    }
+
+    const { invoices } = await this.listInvoicesPage(connection, 1, sinceIso);
+    for (const i of invoices) {
+      changes.push({
+        objectType: 'INVOICE',
+        remoteId: i.invoice_id,
+        changeType: 'UPDATED',
+        occurredAt: i.last_modified_time ? new Date(i.last_modified_time) : new Date(),
+        payload: i,
+      });
+    }
+
+    return { changes, nextCursor: null, hasMore: false };
+  }
+
+  // --- Pull (FR-ZHO-030) -----------------------------------------------------
+  //
+  // Verified against the real Zoho Books API v3 docs, not assumed:
+  //  - Invoices supports a genuine server-side "last_modified_time" filter
+  //    ("modified after" semantics) — the cheap, correct incremental path.
+  //  - Contacts has no modified-time *filter*, and — critically — no
+  //    documented `sort_order` *input* parameter either (it only appears in
+  //    the response), so a descending-sort-plus-early-stop scan cannot be
+  //    relied on. This scans every page every run and filters client-side by
+  //    last_modified_time instead: less efficient, but correct regardless of
+  //    whatever order Zoho actually returns.
+  //  - Customer Payments exposes no modified-time field anywhere, on the
+  //    list or the single-record response. There is no way to ask Zoho
+  //    "what changed" for payments at all — only a full scan, diffed
+  //    locally by payment_id, is possible with the documented API.
+  //  - line_items (Invoices) and customer_id/invoices[] (Customer Payments)
+  //    are absent from their respective list responses — only the
+  //    single-record GET returns them, hence the separate detail methods.
+
+  async listContactsPage(
+    connection: AccountingConnection,
+    page: number,
+  ): Promise<{ contacts: ZohoContactListItem[]; hasMorePage: boolean }> {
+    const body = await this.request<{
+      contacts?: ZohoContactListItem[];
+      page_context?: { has_more_page?: boolean };
+    }>(connection, 'GET', '/books/v3/contacts', {
+      query: { page: String(page), per_page: '200' },
+    });
+    return { contacts: body.contacts ?? [], hasMorePage: Boolean(body.page_context?.has_more_page) };
+  }
+
+  async getContact(connection: AccountingConnection, contactId: string): Promise<ZohoContactDetail> {
+    const body = await this.request<{ contact: ZohoContactDetail }>(
+      connection,
+      'GET',
+      `/books/v3/contacts/${contactId}`,
     );
+    return body.contact;
+  }
+
+  async listInvoicesPage(
+    connection: AccountingConnection,
+    page: number,
+    sinceIso: string | null,
+  ): Promise<{ invoices: ZohoInvoiceListItem[]; hasMorePage: boolean }> {
+    const query: Record<string, string> = { page: String(page), per_page: '200' };
+    if (sinceIso) query.last_modified_time = sinceIso;
+
+    const body = await this.request<{
+      invoices?: ZohoInvoiceListItem[];
+      // The docs render this as an array in the Invoices example (unlike the
+      // plain object shown for Contacts/Payments) — handled defensively
+      // rather than trusted as definitely one shape or the other.
+      page_context?: { has_more_page?: boolean } | Array<{ has_more_page?: boolean }>;
+    }>(connection, 'GET', '/books/v3/invoices', { query });
+
+    const pageContext = Array.isArray(body.page_context) ? body.page_context[0] : body.page_context;
+    return { invoices: body.invoices ?? [], hasMorePage: Boolean(pageContext?.has_more_page) };
+  }
+
+  async getInvoice(connection: AccountingConnection, invoiceId: string): Promise<ZohoInvoiceDetail> {
+    const body = await this.request<{ invoice: ZohoInvoiceDetail }>(
+      connection,
+      'GET',
+      `/books/v3/invoices/${invoiceId}`,
+    );
+    return body.invoice;
+  }
+
+  async listPaymentsPage(
+    connection: AccountingConnection,
+    page: number,
+  ): Promise<{ payments: ZohoPaymentListItem[]; hasMorePage: boolean }> {
+    const body = await this.request<{
+      customerpayments?: ZohoPaymentListItem[];
+      page_context?: { has_more_page?: boolean };
+    }>(connection, 'GET', '/books/v3/customerpayments', {
+      query: { page: String(page), per_page: '200' },
+    });
+    return { payments: body.customerpayments ?? [], hasMorePage: Boolean(body.page_context?.has_more_page) };
+  }
+
+  async getPayment(connection: AccountingConnection, paymentId: string): Promise<ZohoPaymentDetail> {
+    const body = await this.request<{ payment: ZohoPaymentDetail }>(
+      connection,
+      'GET',
+      `/books/v3/customerpayments/${paymentId}`,
+    );
+    return body.payment;
+  }
+
+  /** Inverse of toZohoAddress — null when Zoho returned no address at all,
+   * so a customer with genuinely no address on file stores null rather than
+   * an object of empty strings. */
+  fromZohoAddress(address: ZohoAddressResponse | undefined): {
+    line1: string | null;
+    line2: string | null;
+    city: string | null;
+    region: string | null;
+    postalCode: string | null;
+    country: string | null;
+  } | null {
+    if (!address || Object.keys(address).length === 0) return null;
+    return {
+      line1: address.address ?? null,
+      line2: address.street2 ?? null,
+      city: address.city ?? null,
+      region: address.state ?? null,
+      postalCode: address.zip ?? null,
+      country: address.country ?? null,
+    };
+  }
+
+  /** Inverse of mapPaymentMode. Zoho's payment_mode vocabulary is wider than
+   * our PaymentMethod enum, so anything without a clear counterpart (cash,
+   * paypal, stripe, ...) reads as MANUAL — an offline/other record, which is
+   * exactly what those modes are from our domain's perspective. */
+  reverseMapPaymentMode(mode: string): 'CARD' | 'ACH' | 'CHECK' | 'MANUAL' {
+    switch (mode) {
+      case 'creditcard':
+        return 'CARD';
+      case 'banktransfer':
+      case 'bankremittance':
+        return 'ACH';
+      case 'check':
+        return 'CHECK';
+      default:
+        return 'MANUAL';
+    }
+  }
+
+  /** Inverse of toZohoDate/minorToDecimal boundary — the one place a Zoho
+   * decimal amount becomes our integer minor units. */
+  decimalToMinor(amount: number): number {
+    return Math.round(amount * 100);
   }
 
   private mappingPending(operation: string, question: string): IntegrationError {

@@ -4,8 +4,11 @@ import { NestFactory } from '@nestjs/core';
 import { Worker, type Job } from 'bullmq';
 import { AppModule } from './app.module.js';
 import { getEnv } from './config/env.js';
+import { PrismaService } from './infra/prisma/prisma.service.js';
+import { QueueService } from './infra/queue/queue.service.js';
 import { RedisService } from './infra/redis/redis.service.js';
 import { QUEUES, QUEUE_NAMES, type QueueName } from './infra/queue/queues.js';
+import { ZohoPullService } from './integrations/zoho-pull.service.js';
 import { ZohoSyncService } from './integrations/zoho-sync.service.js';
 
 /**
@@ -37,14 +40,41 @@ async function bootstrap(): Promise<void> {
   });
   const redis = app.get(RedisService);
 
-  // FR-ZHO-011/012: the sync queue's only handlers today are the three Zoho
-  // push jobs. A brand with no Zoho connection is a no-op inside each method,
-  // not a failure, so an unconnected brand's jobs succeed and drain quietly.
+  // FR-ZHO-011/012 (push) and FR-ZHO-030 (pull): a brand with no Zoho
+  // connection is a no-op inside each push method, not a failure, so an
+  // unconnected brand's jobs succeed and drain quietly.
   const zohoSync = app.get(ZohoSyncService);
+  const zohoPull = app.get(ZohoPullService);
+  const prisma = app.get(PrismaService);
+  const queue = app.get(QueueService);
+
   handlers.sync = {
     'zoho-push-customer': (job) => zohoSync.pushCustomer(job.data.brandId, job.data.customerId),
     'zoho-push-invoice': (job) => zohoSync.pushInvoice(job.data.brandId, job.data.invoiceId),
     'zoho-push-payment': (job) => zohoSync.pushPayment(job.data.brandId, job.data.paymentId),
+    'zoho-pull-brand': (job) => zohoPull.pullBrand(job.data.brandId),
+  };
+
+  // The 'scheduled-sync' repeatable job (queues.ts, registered by the API
+  // process via QueueService.registerScheduledJobs) fires every 15 minutes.
+  // Its only job here is fan-out: find every brand with a live Zoho
+  // connection and enqueue one pull job each onto the sync queue, where the
+  // existing per-job concurrency and retry/backoff already apply.
+  handlers.scheduled = {
+    'scheduled-sync': async () => {
+      const connectedBrandIds = await prisma.withoutScope(
+        'scheduled-sync: listing brands with a live Zoho connection',
+        (client) =>
+          client.integrationConnection.findMany({
+            where: { provider: 'ZOHO_BOOKS', status: 'CONNECTED', encryptedCredentials: { not: null } },
+            select: { brandId: true },
+          }),
+      );
+      await Promise.all(
+        connectedBrandIds.map(({ brandId }) => queue.enqueue('sync', 'zoho-pull-brand', { brandId })),
+      );
+      return { brandsEnqueued: connectedBrandIds.length };
+    },
   };
 
   const workers = QUEUE_NAMES.map((name) => {

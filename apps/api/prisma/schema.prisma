@@ -498,6 +498,10 @@ model IntegrationConnection {
   encryptedCredentials String?             @map("encrypted_credentials")
   config               Json?
   lastSyncAt           DateTime?           @map("last_sync_at")
+  /// Cursor for incremental pulls (FR-ZHO-030): the wall-clock time the last
+  /// successful pull *started*, not the newest record seen — using pull-start
+  /// avoids missing a record that gets modified while that pull is running.
+  lastPulledAt         DateTime?           @map("last_pulled_at")
   health               String?
   createdAt            DateTime            @default(now()) @map("created_at")
   updatedAt            DateTime            @updatedAt @map("updated_at")

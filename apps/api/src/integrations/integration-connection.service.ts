@@ -4,7 +4,20 @@ import type { AccountingConnection, Scope } from '@fenwick/shared';
 import { decryptCredential, encryptCredential } from '../common/credential-encryption.js';
 import { ENV, type Env } from '../config/env.js';
 import { PrismaService } from '../infra/prisma/prisma.service.js';
+import { RedisService } from '../infra/redis/redis.service.js';
 import { ZohoBooksAdapter } from '../adapters/accounting/zoho-books.adapter.js';
+
+interface CachedAccessToken {
+  readonly accessToken: string;
+  readonly expiresAt: string; // ISO — Redis stores JSON, Dates don't round-trip
+}
+
+/** Refreshed tokens are cached until 2 minutes before they actually expire —
+ * short enough that a stale token is never handed out, long enough that a
+ * backfill queuing hundreds of jobs shares one token instead of each job
+ * independently hitting Zoho's OAuth server (that storm is what triggers
+ * Zoho's own rate limiting — see the incident this comment is next to). */
+const TOKEN_CACHE_SAFETY_BUFFER_MS = 2 * 60 * 1000;
 
 export interface ZohoCredentials {
   readonly refreshToken: string;
@@ -20,14 +33,23 @@ export interface ZohoConnectionStatus {
   readonly connected: boolean;
   readonly organizationName: string | null;
   readonly lastSyncAt: Date | null;
+  readonly lastPulledAt: Date | null;
   readonly health: string | null;
+}
+
+export interface ZohoActivityEntry {
+  readonly direction: 'PUSH' | 'PULL';
+  readonly objectType: string;
+  readonly status: string;
+  readonly errorClass: string | null;
+  readonly lastError: string | null;
+  readonly updatedAt: Date;
 }
 
 /**
  * Encrypted storage for the Zoho connection, plus the one piece of glue an
- * AccountingConnection always needs: a live access token, refreshed on every
- * use rather than cached (TDD-001 §10.4 chose correctness over an access-
- * token cache this scale does not need).
+ * AccountingConnection always needs: a live access token. Cached per brand
+ * in Redis rather than refreshed on every use — see TOKEN_CACHE_SAFETY_BUFFER_MS.
  */
 @Injectable()
 export class IntegrationConnectionService {
@@ -35,6 +57,7 @@ export class IntegrationConnectionService {
     private readonly prisma: PrismaService,
     @Inject(ENV) private readonly env: Env,
     private readonly zoho: ZohoBooksAdapter,
+    private readonly redis: RedisService,
   ) {}
 
   async saveZohoConnection(
@@ -70,7 +93,9 @@ export class IntegrationConnectionService {
     const row = await this.prisma.withScope(scope, (tx) =>
       tx.integrationConnection.findUnique({ where: { brandId_provider: { brandId, provider: 'ZOHO_BOOKS' } } }),
     );
-    if (!row) return { connected: false, organizationName: null, lastSyncAt: null, health: null };
+    if (!row) {
+      return { connected: false, organizationName: null, lastSyncAt: null, lastPulledAt: null, health: null };
+    }
     const config = row.config as unknown as ZohoConnectionConfig | null;
     return {
       // A CONNECTED status with no stored credentials cannot actually reach
@@ -79,14 +104,37 @@ export class IntegrationConnectionService {
       connected: row.status === 'CONNECTED' && Boolean(row.encryptedCredentials),
       organizationName: config?.organizationName ?? null,
       lastSyncAt: row.lastSyncAt,
+      lastPulledAt: row.lastPulledAt,
       health: row.health,
     };
   }
 
+  /** Null means "never pulled" — the caller treats that as "fetch everything". */
+  async getLastPulledAt(scope: Scope, brandId: string): Promise<Date | null> {
+    const row = await this.prisma.withScope(scope, (tx) =>
+      tx.integrationConnection.findUnique({
+        where: { brandId_provider: { brandId, provider: 'ZOHO_BOOKS' } },
+        select: { lastPulledAt: true },
+      }),
+    );
+    return row?.lastPulledAt ?? null;
+  }
+
+  /** Stamped with when the pull *started*, not the newest record seen —
+   * see the migration comment on IntegrationConnection.lastPulledAt. */
+  async recordPullRun(scope: Scope, brandId: string, pullStartedAt: Date): Promise<void> {
+    await this.prisma.withScope(scope, (tx) =>
+      tx.integrationConnection.update({
+        where: { brandId_provider: { brandId, provider: 'ZOHO_BOOKS' } },
+        data: { lastPulledAt: pullStartedAt },
+      }),
+    );
+  }
+
   /**
-   * A ready-to-use AccountingConnection for one call, with a freshly
-   * refreshed access token. Returns null if the brand has never connected —
-   * the caller decides whether that is "nothing to do" or an error.
+   * A ready-to-use AccountingConnection for one call. Returns null if the
+   * brand has never connected — the caller decides whether that is "nothing
+   * to do" or an error.
    */
   async buildAccountingConnection(scope: Scope, brandId: string): Promise<AccountingConnection | null> {
     const row = await this.prisma.withScope(scope, (tx) =>
@@ -99,7 +147,27 @@ export class IntegrationConnectionService {
     ) as ZohoCredentials;
     const config = row.config as unknown as ZohoConnectionConfig;
 
+    const cached = await this.redis.getJson<CachedAccessToken>(this.tokenCacheKey(brandId));
+    if (cached && new Date(cached.expiresAt).getTime() > Date.now()) {
+      return {
+        brandId,
+        organisationId: config.organizationId,
+        accessToken: cached.accessToken,
+        refreshToken: credentials.refreshToken,
+        expiresAt: new Date(cached.expiresAt),
+      };
+    }
+
     const { accessToken, expiresAt } = await this.zoho.refreshAccessToken(credentials.refreshToken);
+    const ttlSeconds = Math.max(
+      60,
+      Math.round((expiresAt.getTime() - TOKEN_CACHE_SAFETY_BUFFER_MS - Date.now()) / 1000),
+    );
+    await this.redis.setJson(
+      this.tokenCacheKey(brandId),
+      { accessToken, expiresAt: expiresAt.toISOString() } satisfies CachedAccessToken,
+      ttlSeconds,
+    );
 
     return {
       brandId,
@@ -108,6 +176,35 @@ export class IntegrationConnectionService {
       refreshToken: credentials.refreshToken,
       expiresAt,
     };
+  }
+
+  private tokenCacheKey(brandId: string): string {
+    return `zoho:access-token:${brandId}`;
+  }
+
+  /**
+   * FR-ZHO-020/021, and the direct answer to "is this actually doing
+   * anything real": every push and pull attempt records a SyncJob row with
+   * the provider's own verbatim error, not a paraphrase. This surfaces the
+   * last N of them so that is visible on the page itself, not just in a
+   * database query someone has to ask for.
+   */
+  async getRecentActivity(scope: Scope, brandId: string, limit = 15): Promise<ZohoActivityEntry[]> {
+    const rows = await this.prisma.withScope(scope, (tx) =>
+      tx.syncJob.findMany({
+        where: { brandId, provider: 'ZOHO_BOOKS' },
+        orderBy: { updatedAt: 'desc' },
+        take: limit,
+      }),
+    );
+    return rows.map((row) => ({
+      direction: row.direction,
+      objectType: row.objectType,
+      status: row.status,
+      errorClass: row.errorClass,
+      lastError: row.lastError,
+      updatedAt: row.updatedAt,
+    }));
   }
 
   async markUnhealthy(scope: Scope, brandId: string, reason: string): Promise<void> {

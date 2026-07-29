@@ -99,6 +99,27 @@ export function listBrands(): Promise<Brand[]> {
   return apiFetch<Brand[]>('/brands');
 }
 
+/** Mirrors createBrandSchema (brandSchema + invoicePrefix) in the API
+ * exactly — nullable fields must be sent as `null`, not omitted. */
+export interface BrandFormInput {
+  legalName: string;
+  displayName: string;
+  salesPersonName: string | null;
+  phone: string | null;
+  email: string | null;
+  mailingAddress: CustomerAddress | null;
+  billingAddress: CustomerAddress | null;
+  taxId: string | null;
+  currency: string;
+  timezone: string;
+  themeColor: string;
+  invoicePrefix: string;
+}
+
+export function createBrand(input: BrandFormInput): Promise<Brand> {
+  return apiFetch<Brand>('/brands', { method: 'POST', body: JSON.stringify(input) });
+}
+
 // --- Customers (FR-CUS) ------------------------------------------------------
 
 export interface CustomerAddress {
@@ -274,6 +295,7 @@ export interface ZohoConnectionStatus {
   connected: boolean;
   organizationName: string | null;
   lastSyncAt: string | null;
+  lastPulledAt: string | null;
   health: string | null;
 }
 
@@ -289,6 +311,23 @@ export interface ZohoBackfillCounts {
 
 export function backfillZoho(brandId: string): Promise<ZohoBackfillCounts> {
   return apiFetch<ZohoBackfillCounts>(`/brands/${brandId}/integrations/zoho/backfill`, { method: 'POST' });
+}
+
+export function pullZoho(brandId: string): Promise<{ queued: boolean }> {
+  return apiFetch<{ queued: boolean }>(`/brands/${brandId}/integrations/zoho/pull`, { method: 'POST' });
+}
+
+export interface ZohoActivityEntry {
+  direction: 'PUSH' | 'PULL';
+  objectType: string;
+  status: string;
+  errorClass: string | null;
+  lastError: string | null;
+  updatedAt: string;
+}
+
+export function getZohoActivity(brandId: string): Promise<ZohoActivityEntry[]> {
+  return apiFetch<ZohoActivityEntry[]>(`/brands/${brandId}/integrations/zoho/activity`);
 }
 
 export { API_URL };

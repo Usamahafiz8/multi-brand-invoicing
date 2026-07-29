@@ -1,12 +1,17 @@
-import { BadRequestException, Controller, Get, Inject, Logger, Param, Post, Query, Res } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Controller, Get, Inject, Logger, Param, Post, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
-import { idSchema, type Scope } from '@fenwick/shared';
+import { IntegrationError, idSchema, type Scope } from '@fenwick/shared';
 import { zodPipe } from '../common/zod-validation.pipe.js';
 import { ENV, type Env } from '../config/env.js';
 import { ZohoBooksAdapter } from '../adapters/accounting/zoho-books.adapter.js';
+import { QueueService } from '../infra/queue/queue.service.js';
 import { CurrentScope, Public, RequirePermission } from '../tenancy/authorisation.js';
 import { SystemScopeResolver } from '../tenancy/system-scope.js';
-import { IntegrationConnectionService, type ZohoConnectionStatus } from './integration-connection.service.js';
+import {
+  IntegrationConnectionService,
+  type ZohoActivityEntry,
+  type ZohoConnectionStatus,
+} from './integration-connection.service.js';
 import { signZohoState, verifyZohoState } from './zoho-oauth-state.js';
 import { ZohoSyncService, type BackfillCounts } from './zoho-sync.service.js';
 
@@ -27,6 +32,7 @@ export class ZohoConnectController {
     private readonly connections: IntegrationConnectionService,
     private readonly systemScope: SystemScopeResolver,
     private readonly sync: ZohoSyncService,
+    private readonly queue: QueueService,
   ) {}
 
   @Get('brands/:brandId/integrations/zoho/status')
@@ -38,6 +44,15 @@ export class ZohoConnectController {
     return this.connections.getStatus(scope, brandId);
   }
 
+  @Get('brands/:brandId/integrations/zoho/activity')
+  @RequirePermission('INTEGRATIONS', 'READ')
+  activity(
+    @Param('brandId', zodPipe(idSchema)) brandId: string,
+    @CurrentScope() scope: Scope,
+  ): Promise<ZohoActivityEntry[]> {
+    return this.connections.getRecentActivity(scope, brandId);
+  }
+
   /**
    * FR-ZHO-013. Re-runnable on demand — enqueueBackfill only ever queues
    * records still missing a zoho*Id, so calling this again after the initial
@@ -45,8 +60,33 @@ export class ZohoConnectController {
    */
   @Post('brands/:brandId/integrations/zoho/backfill')
   @RequirePermission('INTEGRATIONS', 'WRITE')
-  backfill(@Param('brandId', zodPipe(idSchema)) brandId: string): Promise<BackfillCounts> {
-    return this.sync.enqueueBackfill(brandId);
+  async backfill(@Param('brandId', zodPipe(idSchema)) brandId: string): Promise<BackfillCounts> {
+    try {
+      return await this.sync.enqueueBackfill(brandId);
+    } catch (cause) {
+      // Surface what Zoho actually said (e.g. a rate limit) rather than a
+      // bare 500 — this is exactly the failure mode that showed up as an
+      // unhelpful "Internal server error" in the admin UI.
+      if (cause instanceof IntegrationError) {
+        throw new BadGatewayException(cause.providerMessage ?? cause.message);
+      }
+      throw cause;
+    }
+  }
+
+  /**
+   * FR-ZHO-030. Enqueues rather than pulling inline — a full pull can
+   * paginate through hundreds of records across three entity types plus a
+   * detail fetch per record, which comfortably exceeds a sane HTTP timeout
+   * for a large account. This also runs automatically every 15 minutes
+   * (worker.ts's 'scheduled-sync' handler); this endpoint just lets it be
+   * triggered on demand instead of waiting for the next tick.
+   */
+  @Post('brands/:brandId/integrations/zoho/pull')
+  @RequirePermission('INTEGRATIONS', 'WRITE')
+  async pullNow(@Param('brandId', zodPipe(idSchema)) brandId: string): Promise<{ queued: boolean }> {
+    await this.queue.enqueue('sync', 'zoho-pull-brand', { brandId });
+    return { queued: true };
   }
 
   @Get('brands/:brandId/integrations/zoho/connect')

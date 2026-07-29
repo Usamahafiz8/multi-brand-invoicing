@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import { UnrecoverableError } from 'bullmq';
 import type {
   AccountingAddress,
   AccountingConnection,
@@ -368,6 +369,16 @@ export class ZohoSyncService {
         }),
       );
       this.logger.warn(`Zoho push failed — brand ${brandId}, ${objectType} ${objectId}: ${error instanceof Error ? error.message : error}`);
+
+      // A non-retryable class (e.g. VALIDATION — "this customer already
+      // exists") will never succeed no matter how many times BullMQ retries
+      // it. Without this, the queue's default attempts:5 blindly retries
+      // every failure regardless of class, multiplying one permanent
+      // failure into five recorded ones. UnrecoverableError tells BullMQ to
+      // stop immediately instead of consulting attempts/backoff at all.
+      if (integrationError && !integrationError.retryable) {
+        throw new UnrecoverableError(integrationError.message);
+      }
       throw error;
     }
   }
