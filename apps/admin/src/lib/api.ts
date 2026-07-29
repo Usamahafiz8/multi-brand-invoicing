@@ -303,20 +303,6 @@ export function getZohoStatus(brandId: string): Promise<ZohoConnectionStatus> {
   return apiFetch<ZohoConnectionStatus>(`/brands/${brandId}/integrations/zoho/status`);
 }
 
-export interface ZohoBackfillCounts {
-  customers: number;
-  invoices: number;
-  payments: number;
-}
-
-export function backfillZoho(brandId: string): Promise<ZohoBackfillCounts> {
-  return apiFetch<ZohoBackfillCounts>(`/brands/${brandId}/integrations/zoho/backfill`, { method: 'POST' });
-}
-
-export function pullZoho(brandId: string): Promise<{ queued: boolean }> {
-  return apiFetch<{ queued: boolean }>(`/brands/${brandId}/integrations/zoho/pull`, { method: 'POST' });
-}
-
 export interface ZohoActivityEntry {
   direction: 'PUSH' | 'PULL';
   objectType: string;

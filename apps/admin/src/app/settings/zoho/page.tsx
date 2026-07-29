@@ -1,8 +1,7 @@
 import Link from 'next/link';
 import { BrandTheme } from '@/components/brand-theme';
 import { ApiError, getZohoActivity, getZohoStatus, listBrands, type Brand, type ZohoActivityEntry } from '@/lib/api';
-import { ActivityFeed } from './activity-feed';
-import { backfillZohoAction, pullZohoAction } from './actions';
+import { ZohoLivePanel } from './live-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,13 +18,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 export default async function ZohoSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{
-    brandId?: string;
-    connected?: string;
-    error?: string;
-    backfilled?: string;
-    pulling?: string;
-  }>;
+  searchParams: Promise<{ brandId?: string; connected?: string; error?: string }>;
 }) {
   const params = await searchParams;
 
@@ -57,21 +50,13 @@ export default async function ZohoSettingsPage({
     try {
       activity = await getZohoActivity(activeBrand.id);
     } catch {
-      // Not shown as a page-level error — the activity list is supplementary
-      // detail, and the status card above already reports the connection
+      // Not shown as a page-level error — the live panel handles its own
+      // loading, and the status card above already reports the connection
       // itself accurately either way.
     }
   }
 
   const errorMessage = params.error ? (ERROR_MESSAGES[params.error] ?? params.error) : null;
-
-  const backfilled = params.backfilled?.split(',').map(Number);
-  const backfillMessage =
-    backfilled && backfilled.length === 3
-      ? backfilled.every((n) => n === 0)
-        ? 'Nothing to queue — everything is already synced.'
-        : `Queued ${backfilled[0]} customer(s), ${backfilled[1]} invoice(s), ${backfilled[2]} payment(s).`
-      : null;
 
   return (
     <BrandTheme brandColour={activeBrand?.themeColor ?? FALLBACK_THEME_COLOUR}>
@@ -107,18 +92,6 @@ export default async function ZohoSettingsPage({
             {params.connected && (
               <div className="mb-4 rounded-md bg-success-surface p-3 text-sm text-success">
                 Connected.
-              </div>
-            )}
-            {backfillMessage && (
-              <div className="mb-4 rounded-md bg-success-surface p-3 text-sm text-success">
-                {backfillMessage}
-              </div>
-            )}
-            {params.pulling && (
-              <div className="mb-4 rounded-md bg-success-surface p-3 text-sm text-success">
-                Pull queued — this can take a while for a large account, since Zoho requires a
-                separate detail fetch per record. Check back here for the updated &ldquo;Last
-                pulled&rdquo; time.
               </div>
             )}
             {errorMessage && (
@@ -169,47 +142,16 @@ export default async function ZohoSettingsPage({
                     />
                   </div>
 
-                  <div className="mt-4 flex flex-wrap gap-3">
-                    <a
-                      href={`/settings/zoho/connect?brandId=${activeBrand.id}`}
-                      className="inline-block rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-foreground"
-                    >
-                      {status.connected ? 'Reconnect Zoho' : 'Connect Zoho'}
-                    </a>
-                    {status.connected && (
-                      <>
-                        <form action={backfillZohoAction}>
-                          <input type="hidden" name="brandId" value={activeBrand.id} />
-                          <button
-                            type="submit"
-                            className="rounded-md border border-border px-4 py-2 text-sm font-medium text-ink-strong hover:bg-surface-muted"
-                          >
-                            Sync existing records
-                          </button>
-                        </form>
-                        <form action={pullZohoAction}>
-                          <input type="hidden" name="brandId" value={activeBrand.id} />
-                          <button
-                            type="submit"
-                            className="rounded-md border border-border px-4 py-2 text-sm font-medium text-ink-strong hover:bg-surface-muted"
-                          >
-                            Pull from Zoho now
-                          </button>
-                        </form>
-                      </>
-                    )}
+                  <div className="mt-4">
+                    <ZohoLivePanel
+                      brandId={activeBrand.id}
+                      connected={status.connected}
+                      connectHref={`/settings/zoho/connect?brandId=${activeBrand.id}`}
+                      initial={activity}
+                    />
                   </div>
-                  <p className="mt-3 text-xs text-ink-muted">
-                    {status.connected
-                      ? 'Sync existing records pushes anything not yet in Zoho. Pull from Zoho now fetches everything from your Zoho account immediately, rather than waiting for the automatic 15-minute cycle.'
-                      : "Connecting opens Zoho's own sign-in and consent screen — completing it needs your real Zoho account."}
-                  </p>
                 </div>
               )
-            )}
-
-            {activeBrand && status.connected && (
-              <ActivityFeed brandId={activeBrand.id} initial={activity} />
             )}
           </>
         )}
