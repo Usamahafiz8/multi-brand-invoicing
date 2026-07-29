@@ -11,8 +11,7 @@ import type { CustomerInput, InvoiceDraftInput, PublicScope, RequestScope } from
 import { loadEnv } from '../config/load-env.js';
 import { getEnv } from '../config/env.js';
 import { PrismaService } from '../infra/prisma/prisma.service.js';
-import { RedisService } from '../infra/redis/redis.service.js';
-import { QueueService } from '../infra/queue/queue.service.js';
+import { createFakeQueueService } from '../infra/queue/fake-queue.service.js';
 import { FakeGatewayAdapter } from '../adapters/gateway/fake-gateway.adapter.js';
 import { CustomersService } from '../customers/customers.service.js';
 import { InvoicesService } from '../invoices/invoices.service.js';
@@ -26,8 +25,7 @@ const describeWithDb = hasDb ? describe : describe.skip;
 describeWithDb('PaymentsService', () => {
   const prisma = new PrismaService(env!);
   const gateway = new FakeGatewayAdapter();
-  const redis = new RedisService(env!);
-  const queue = new QueueService(redis);
+  const queue = createFakeQueueService();
   const customers = new CustomersService(prisma, queue);
   const invoices = new InvoicesService(prisma, queue);
   const payments = new PaymentsService(prisma, env!, gateway, queue);
@@ -39,10 +37,8 @@ describeWithDb('PaymentsService', () => {
   let ownerScope: RequestScope;
 
   beforeAll(async () => {
-    await queue.onModuleInit();
-
     const brand = await owner.brand.findFirst({
-      where: { displayName: 'Solstice Kitchenware' },
+      where: { displayName: 'Cobalt Studio Supply' },
       select: { id: true, merchantId: true },
     });
     if (!brand) throw new Error('seed data missing — run pnpm db:seed');
@@ -80,8 +76,6 @@ describeWithDb('PaymentsService', () => {
   });
 
   afterAll(async () => {
-    await queue.onModuleDestroy();
-    await redis.onModuleDestroy();
     await Promise.all([prisma.$disconnect(), owner.$disconnect()]);
   });
 

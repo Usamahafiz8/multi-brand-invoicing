@@ -10,8 +10,7 @@ import type { CustomerInput, InvoiceDraftInput, RequestScope } from '@fenwick/sh
 import { loadEnv } from '../config/load-env.js';
 import { getEnv } from '../config/env.js';
 import { PrismaService } from '../infra/prisma/prisma.service.js';
-import { RedisService } from '../infra/redis/redis.service.js';
-import { QueueService } from '../infra/queue/queue.service.js';
+import { createFakeQueueService } from '../infra/queue/fake-queue.service.js';
 import { CustomersService } from '../customers/customers.service.js';
 import { InvoicesService } from './invoices.service.js';
 
@@ -22,8 +21,7 @@ const describeWithDb = hasDb ? describe : describe.skip;
 
 describeWithDb('InvoicesService', () => {
   const prisma = new PrismaService(env!);
-  const redis = new RedisService(env!);
-  const queue = new QueueService(redis);
+  const queue = createFakeQueueService();
   const customers = new CustomersService(prisma, queue);
   const invoices = new InvoicesService(prisma, queue);
   const owner = new PrismaClient({ datasources: { db: { url: env!.DIRECT_DATABASE_URL ?? env!.DATABASE_URL } } });
@@ -36,10 +34,8 @@ describeWithDb('InvoicesService', () => {
   let customerWithoutEmailId = '';
 
   beforeAll(async () => {
-    await queue.onModuleInit();
-
     const solstice = await owner.brand.findFirst({
-      where: { displayName: 'Solstice Kitchenware' },
+      where: { displayName: 'Cobalt Studio Supply' },
       select: { id: true, merchantId: true },
     });
     const northgate = await owner.brand.findFirst({
@@ -86,8 +82,6 @@ describeWithDb('InvoicesService', () => {
   });
 
   afterAll(async () => {
-    await queue.onModuleDestroy();
-    await redis.onModuleDestroy();
     await Promise.all([prisma.$disconnect(), owner.$disconnect()]);
   });
 
@@ -137,7 +131,9 @@ describeWithDb('InvoicesService', () => {
     );
     const numbers = results.map((r) => r.number);
     expect(new Set(numbers).size).toBe(numbers.length); // no collisions
-    for (const number of numbers) expect(number).toMatch(/^SOL-\d{4}$/);
+    // Prefix is whatever this brand's seed data set it to — the property
+    // under test is uniqueness and sequencing, not which brand it is.
+    for (const number of numbers) expect(number).toMatch(/^[A-Z]+-\d{4}$/);
   });
 
   it('issues a valid draft: status becomes SENT and issuedAt is stamped', async () => {
