@@ -1,125 +1,216 @@
-import { Activity, CircleCheck, CircleX, Plug } from 'lucide-react';
-import { BRAND_COLOUR_PRESETS, assessBrandColour } from '@fenwick/shared/tokens';
+import Link from 'next/link';
+import { CircleCheck, CircleDashed, ScrollText, Users, Wallet } from 'lucide-react';
+import { formatMinorForDisplay } from '@fenwick/shared/money';
 import { BrandTheme } from '@/components/brand-theme';
-import { API_URL, getHealth, type HealthResponse } from '@/lib/api';
+import {
+  ApiError,
+  getZohoStatus,
+  listBrands,
+  listCustomers,
+  listInvoices,
+  type Brand,
+  type Invoice,
+} from '@/lib/api';
 
-// The status of live dependencies is never cached.
 export const dynamic = 'force-dynamic';
 
-/**
- * Platform status.
- *
- * This is the admin app's scaffold, not a dashboard: it proves the connections
- * the rest of the application will be built on — the API is reachable, its
- * dependencies are up, and brand theming resolves to accessible colours.
- * Feature screens replace it as FR-DSH and FR-INV land.
- */
-export default async function Home() {
-  let health: HealthResponse | null = null;
-  let error: string | null = null;
+const FALLBACK_THEME_COLOUR = '#16261F';
+const OPEN_STATUSES = new Set(['SENT', 'VIEWED', 'PENDING_PAYMENT', 'PARTIALLY_PAID']);
 
+function statusTone(status: string): string {
+  if (status === 'PAID') return 'text-success';
+  if (status === 'CANCELLED') return 'text-ink-subtle';
+  if (status === 'PENDING_PAYMENT' || status === 'PARTIALLY_PAID') return 'text-warning';
+  return 'text-ink-strong';
+}
+
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  href,
+}: {
+  icon: typeof Wallet;
+  label: string;
+  value: string;
+  href?: string;
+}) {
+  const content = (
+    <div className="rounded-lg border border-border bg-surface p-5 shadow-sm">
+      <div className="mb-2 flex items-center gap-2 text-ink-muted">
+        <Icon className="h-4 w-4" aria-hidden />
+        <span className="text-xs font-medium uppercase tracking-wide">{label}</span>
+      </div>
+      <p className="text-2xl font-semibold text-ink-strong">{value}</p>
+    </div>
+  );
+  return href ? (
+    <Link href={href} className="block transition hover:border-brand-ink">
+      {content}
+    </Link>
+  ) : (
+    content
+  );
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ brandId?: string; brandCreated?: string }>;
+}) {
+  const params = await searchParams;
+
+  let brands: Brand[] = [];
+  let brandsError: string | null = null;
   try {
-    health = await getHealth();
+    brands = await listBrands();
   } catch (cause) {
-    error = cause instanceof Error ? cause.message : String(cause);
+    brandsError = cause instanceof ApiError ? cause.message : String(cause);
   }
 
+  const activeBrand = brands.find((b) => b.id === params.brandId) ?? brands[0] ?? null;
+
+  let customerTotal = 0;
+  let invoices: Invoice[] = [];
+  let customerNames = new Map<string, string>();
+  let zohoConnected = false;
+  let dataError: string | null = null;
+
+  if (activeBrand) {
+    try {
+      const [customersResult, invoicesResult, zohoStatus] = await Promise.all([
+        listCustomers(activeBrand.id),
+        listInvoices(activeBrand.id),
+        getZohoStatus(activeBrand.id).catch(() => ({
+          connected: false,
+          organizationName: null,
+          lastSyncAt: null,
+          health: null,
+        })),
+      ]);
+      customerTotal = customersResult.total;
+      invoices = invoicesResult;
+      customerNames = new Map(customersResult.data.map((c) => [c.id, c.displayName]));
+      zohoConnected = zohoStatus.connected;
+    } catch (cause) {
+      dataError = cause instanceof ApiError ? cause.message : String(cause);
+    }
+  }
+
+  const outstandingMinor = invoices
+    .filter((inv) => OPEN_STATUSES.has(inv.status))
+    .reduce((sum, inv) => sum + inv.balanceMinor, 0);
+  const currency = (activeBrand?.currency ?? 'USD') as 'USD';
+  const recentInvoices = invoices.slice(0, 5);
+
   return (
-    <main className="mx-auto max-w-4xl px-6 py-12">
-      <header className="mb-10">
-        <p className="text-sm uppercase tracking-widest text-ink-subtle">Fenwick Holdings Inc.</p>
-        <h1 className="mt-1 text-2xl font-semibold text-ink-strong">
-          Multi-brand invoicing — admin
-        </h1>
-        <p className="mt-2 max-w-2xl text-ink-muted">
-          Application scaffold. The framework, tenancy layer and integration ports are wired;
-          feature screens land on top of them.
-        </p>
-      </header>
+    <BrandTheme brandColour={activeBrand?.themeColor ?? FALLBACK_THEME_COLOUR}>
+      <main className="mx-auto max-w-5xl px-6 py-12">
+        <header className="mb-8">
+          <p className="text-sm uppercase tracking-widest text-ink-subtle">
+            {activeBrand ? activeBrand.displayName : 'Fenwick Holdings Inc.'}
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold text-ink-strong">Dashboard</h1>
+        </header>
 
-      <section className="mb-8 rounded-lg border border-border bg-surface p-6 shadow-sm">
-        <div className="mb-4 flex items-center gap-2">
-          <Activity className="h-4 w-4 text-ink-muted" aria-hidden />
-          <h2 className="font-medium text-ink-strong">API health</h2>
-          <span className="ml-auto font-mono text-xs text-ink-subtle">{API_URL}</span>
-        </div>
+        {params.brandCreated && (
+          <div className="mb-4 rounded-md bg-success-surface p-3 text-sm text-success">
+            Brand created.
+          </div>
+        )}
 
-        {error ? (
+        {brandsError ? (
           <div className="rounded-md bg-danger-surface p-4 text-sm text-danger">
-            <p className="font-medium">The API is not reachable.</p>
-            <p className="mt-1 font-mono text-xs">{error}</p>
-            <p className="mt-2 text-ink-muted">
-              Start it with <code className="font-mono">pnpm dev</code>, or bring dependencies up
-              with <code className="font-mono">pnpm setup:local</code>.
-            </p>
+            Could not load brands: {brandsError}
+          </div>
+        ) : brands.length === 0 ? (
+          <div className="rounded-lg border border-border bg-surface p-8 text-center">
+            <p className="text-sm text-ink-muted">No brands exist yet.</p>
+            <Link
+              href="/brands/new"
+              className="mt-4 inline-block rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-foreground"
+            >
+              Create your first brand
+            </Link>
+          </div>
+        ) : dataError ? (
+          <div className="rounded-md bg-danger-surface p-4 text-sm text-danger">
+            Could not load dashboard data: {dataError}
           </div>
         ) : (
           <>
-            <ul className="grid gap-2 sm:grid-cols-2">
-              {health?.checks.map((check) => (
-                <li
-                  key={check.name}
-                  className="flex items-center gap-2 rounded-md bg-surface-muted px-3 py-2 text-sm"
-                >
-                  {check.state === 'up' ? (
-                    <CircleCheck className="h-4 w-4 text-success" aria-hidden />
-                  ) : (
-                    <CircleX className="h-4 w-4 text-danger" aria-hidden />
-                  )}
-                  <span className="text-ink-strong">{check.name}</span>
-                  <span className="ml-auto font-mono text-xs text-ink-subtle">
-                    {check.durationMs}ms
-                  </span>
-                </li>
-              ))}
-            </ul>
-
-            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-              <Plug className="h-4 w-4 text-ink-muted" aria-hidden />
-              <span className="text-sm text-ink-muted">Bound adapters:</span>
-              {Object.entries(health?.adapters ?? {}).map(([port, driver]) => (
-                <span
-                  key={port}
-                  className="rounded-full bg-accent-surface px-2.5 py-0.5 text-xs text-ink-strong"
-                >
-                  {port}: <span className="font-mono">{driver}</span>
-                </span>
-              ))}
+            <div className="mb-8 grid gap-4 sm:grid-cols-3">
+              <StatCard
+                icon={Wallet}
+                label="Outstanding balance"
+                value={formatMinorForDisplay(outstandingMinor, currency)}
+                href={`/invoices?brandId=${activeBrand!.id}`}
+              />
+              <StatCard
+                icon={Users}
+                label="Customers"
+                value={String(customerTotal)}
+                href={`/customers?brandId=${activeBrand!.id}`}
+              />
+              <StatCard
+                icon={zohoConnected ? CircleCheck : CircleDashed}
+                label="Zoho Books"
+                value={zohoConnected ? 'Connected' : 'Not connected'}
+                href={`/settings/zoho?brandId=${activeBrand!.id}`}
+              />
             </div>
-          </>
-        )}
-      </section>
 
-      <section className="rounded-lg border border-border bg-surface p-6 shadow-sm">
-        <h2 className="mb-1 font-medium text-ink-strong">Brand theming</h2>
-        <p className="mb-4 text-sm text-ink-muted">
-          One component set, any brand&rsquo;s colours. The foreground is computed for contrast, so
-          a brand colour that cannot carry readable text is caught here rather than on a
-          customer&rsquo;s payment page.
-        </p>
+            <section className="rounded-lg border border-border bg-surface shadow-sm">
+              <div className="flex items-center justify-between border-b border-border px-5 py-3">
+                <h2 className="font-medium text-ink-strong">Recent invoices</h2>
+                <Link
+                  href={`/invoices?brandId=${activeBrand!.id}`}
+                  className="text-sm text-brand-ink underline"
+                >
+                  View all
+                </Link>
+              </div>
 
-        <div className="grid gap-3 sm:grid-cols-3">
-          {BRAND_COLOUR_PRESETS.map((colour) => {
-            const assessment = assessBrandColour(colour);
-            return (
-              <BrandTheme key={colour} brandColour={colour}>
-                <div className="rounded-md border border-border p-3">
-                  <button
-                    type="button"
-                    className="w-full rounded-md bg-brand px-3 py-2 text-sm font-medium text-brand-foreground"
-                  >
-                    Send invoice
-                  </button>
-                  <p className="mt-2 font-mono text-xs text-ink-subtle">{colour}</p>
-                  <p className="text-xs text-ink-muted">
-                    on-brand {assessment.onBrandRatio}:1 · text {assessment.brandInkRatio}:1
+              {recentInvoices.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 p-12 text-center">
+                  <ScrollText className="h-8 w-8 text-ink-subtle" aria-hidden />
+                  <p className="font-medium text-ink-strong">No invoices yet</p>
+                  <p className="text-sm text-ink-muted">
+                    Create the first invoice for {activeBrand!.displayName}.
                   </p>
                 </div>
-              </BrandTheme>
-            );
-          })}
-        </div>
-      </section>
-    </main>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left text-xs font-semibold uppercase tracking-wide text-ink-subtle">
+                      <th className="px-5 py-3">Invoice</th>
+                      <th className="px-5 py-3">Customer</th>
+                      <th className="px-5 py-3">Status</th>
+                      <th className="px-5 py-3">Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentInvoices.map((inv) => (
+                      <tr key={inv.id} className="border-b border-border last:border-0">
+                        <td className="px-5 py-3 font-medium text-ink-strong">{inv.number}</td>
+                        <td className="px-5 py-3 text-ink-muted">
+                          {customerNames.get(inv.customerId) ?? '—'}
+                        </td>
+                        <td className={`px-5 py-3 font-medium ${statusTone(inv.status)}`}>
+                          {inv.status.replace('_', ' ')}
+                        </td>
+                        <td className="px-5 py-3 font-mono text-ink-strong">
+                          {formatMinorForDisplay(inv.balanceMinor, currency)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
+          </>
+        )}
+      </main>
+    </BrandTheme>
   );
 }

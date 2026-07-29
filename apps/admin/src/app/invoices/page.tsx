@@ -74,29 +74,17 @@ export default async function InvoicesPage({
             Could not load brands: {brandsError}
           </div>
         ) : brands.length === 0 ? (
-          <div className="rounded-lg border border-border bg-surface p-6 text-sm text-ink-muted">
-            No brands exist yet.
+          <div className="rounded-lg border border-border bg-surface p-8 text-center">
+            <p className="text-sm text-ink-muted">No brands exist yet.</p>
+            <Link
+              href="/brands/new"
+              className="mt-4 inline-block rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-foreground"
+            >
+              Create your first brand
+            </Link>
           </div>
         ) : (
           <>
-            {brands.length > 1 && (
-              <nav className="mb-6 flex flex-wrap gap-2" aria-label="Switch brand">
-                {brands.map((b) => (
-                  <Link
-                    key={b.id}
-                    href={`/invoices?brandId=${b.id}`}
-                    className={`rounded-full px-3 py-1 text-sm font-medium ${
-                      activeBrand?.id === b.id
-                        ? 'bg-ink-strong text-white'
-                        : 'bg-surface-muted text-ink-muted hover:text-ink-strong'
-                    }`}
-                  >
-                    {b.displayName}
-                  </Link>
-                ))}
-              </nav>
-            )}
-
             {params.created && (
               <div className="mb-4 rounded-md bg-success-surface p-3 text-sm text-success">
                 Invoice created and issued. Its payment link is below.
