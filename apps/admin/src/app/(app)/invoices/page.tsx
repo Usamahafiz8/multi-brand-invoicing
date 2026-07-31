@@ -3,10 +3,10 @@ import { Plus, ScrollText } from 'lucide-react';
 import { formatMinorForDisplay } from '@fenwick/shared/money';
 import { BrandTheme } from '@/components/brand-theme';
 import { ApiError, listBrands, listInvoices, type Brand, type Invoice } from '@/lib/api';
+import { DEFAULT_BRAND_COLOUR } from '@fenwick/shared/tokens';
 
 export const dynamic = 'force-dynamic';
 
-const FALLBACK_THEME_COLOUR = '#16261F';
 
 const PAYMENT_PUBLIC_URL = process.env['NEXT_PUBLIC_PAYMENT_PUBLIC_URL'] ?? 'http://localhost:3001';
 
@@ -45,7 +45,7 @@ export default async function InvoicesPage({
   }
 
   return (
-    <BrandTheme brandColour={activeBrand?.themeColor ?? FALLBACK_THEME_COLOUR}>
+    <BrandTheme brandColour={activeBrand?.themeColor ?? DEFAULT_BRAND_COLOUR}>
       <main className="mx-auto max-w-5xl px-6 py-12">
         <header className="mb-8 flex items-start justify-between gap-4">
           <div>

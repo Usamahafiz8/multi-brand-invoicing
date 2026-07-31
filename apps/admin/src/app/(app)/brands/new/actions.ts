@@ -2,6 +2,7 @@
 
 import { redirect } from 'next/navigation';
 import { ApiError, createBrand, type BrandFormInput } from '@/lib/api';
+import { DEFAULT_BRAND_COLOUR } from '@fenwick/shared/tokens';
 
 export interface CreateBrandState {
   readonly error?: string;
@@ -44,7 +45,7 @@ export async function createBrandAction(
     taxId: emptyToNull(formData.get('taxId')),
     currency: emptyToNull(formData.get('currency')) ?? 'USD',
     timezone: emptyToNull(formData.get('timezone')) ?? 'America/New_York',
-    themeColor: emptyToNull(formData.get('themeColor')) ?? '#2D6A6A',
+    themeColor: emptyToNull(formData.get('themeColor')) ?? DEFAULT_BRAND_COLOUR,
     invoicePrefix: invoicePrefix.toUpperCase(),
   };
 

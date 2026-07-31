@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { BRAND_COLOUR_PRESETS } from './tokens.js';
+import { BRAND_COLOUR_PRESETS, palette } from './tokens.js';
 import {
+  DEFAULT_INK,
   assessBrandColour,
   contrastRatio,
   darkenUntilAccessible,
@@ -30,17 +31,40 @@ describe('contrast ratio', () => {
   });
 });
 
+describe('DEFAULT_INK', () => {
+  // contrast.ts cannot import the palette without a cycle, so it carries its
+  // own copy of the ink. This is what stops the two drifting apart.
+  it('matches palette.ink', () => {
+    expect(DEFAULT_INK).toBe(palette.ink);
+  });
+
+  it('clears AA against the canvas and every surface token', () => {
+    for (const surface of [palette.canvas, palette.surface, palette.surfaceMuted, palette.surfaceSunken]) {
+      expect(contrastRatio(DEFAULT_INK, surface)).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+});
+
+describe('the neutral ink scale', () => {
+  // inkSubtle is the lightest text token; below 4.5:1 it stops being text.
+  it('keeps every ink token legible on white', () => {
+    for (const ink of [palette.ink, palette.inkStrong, palette.inkMuted, palette.inkSubtle]) {
+      expect(contrastRatio(ink, palette.surface), `${ink} on white`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+});
+
 describe('foregroundOn', () => {
   it('picks white on a dark brand and ink on a light one', () => {
     expect(foregroundOn('#2D6A6A')).toBe('#FFFFFF');
-    expect(foregroundOn('#FFE800')).toBe('#132119');
+    expect(foregroundOn('#FFE800')).toBe(DEFAULT_INK);
   });
 });
 
 describe('darkenUntilAccessible', () => {
   it('leaves an already-compliant colour alone', () => {
-    const result = darkenUntilAccessible('#132119');
-    expect(result.hex).toBe('#132119');
+    const result = darkenUntilAccessible(DEFAULT_INK);
+    expect(result.hex).toBe(DEFAULT_INK);
     expect(result.achieved).toBe(true);
   });
 
@@ -71,7 +95,7 @@ describe('assessBrandColour', () => {
 
   it('always returns a foreground that is one of white or the ink', () => {
     for (const colour of ['#000000', '#FFFFFF', '#808080', '#2D6A6A']) {
-      expect(['#FFFFFF', '#132119']).toContain(assessBrandColour(colour).onBrand);
+      expect(['#FFFFFF', DEFAULT_INK]).toContain(assessBrandColour(colour).onBrand);
     }
   });
 });

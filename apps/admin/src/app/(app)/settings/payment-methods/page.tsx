@@ -2,10 +2,10 @@ import Link from 'next/link';
 import { BrandTheme } from '@/components/brand-theme';
 import { ApiError, getPaymentMethodSettings, listBrands, type Brand } from '@/lib/api';
 import { MethodsForm } from './methods-form';
+import { DEFAULT_BRAND_COLOUR } from '@fenwick/shared/tokens';
 
 export const dynamic = 'force-dynamic';
 
-const FALLBACK_THEME_COLOUR = '#16261F';
 
 export default async function PaymentMethodsPage({
   searchParams,
@@ -41,7 +41,7 @@ export default async function PaymentMethodsPage({
   }
 
   return (
-    <BrandTheme brandColour={activeBrand?.themeColor ?? FALLBACK_THEME_COLOUR}>
+    <BrandTheme brandColour={activeBrand?.themeColor ?? DEFAULT_BRAND_COLOUR}>
       <main className="mx-auto max-w-2xl px-6 py-12">
         <header className="mb-8">
           <p className="text-sm uppercase tracking-widest text-ink-subtle">

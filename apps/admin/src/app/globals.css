@@ -8,9 +8,9 @@
  * fallbacks used before a brand is selected.
  */
 :root {
-  --brand: #2d6a6a;
+  --brand: #0a0a0a;
   --brand-foreground: #ffffff;
-  --brand-ink: #2d6a6a;
+  --brand-ink: #0a0a0a;
 }
 
 html,

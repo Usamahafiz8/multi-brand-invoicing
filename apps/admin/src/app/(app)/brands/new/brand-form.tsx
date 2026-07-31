@@ -1,6 +1,7 @@
 'use client';
 
 import { useActionState } from 'react';
+import { DEFAULT_BRAND_COLOUR } from '@fenwick/shared/tokens';
 import { createBrandAction, type CreateBrandState } from './actions';
 
 const initialState: CreateBrandState = {};
@@ -60,7 +61,7 @@ export function BrandForm() {
             <input
               name="themeColor"
               type="color"
-              defaultValue="#2D6A6A"
+              defaultValue={DEFAULT_BRAND_COLOUR}
               className="h-10 w-full rounded-md border border-border bg-surface px-1"
             />
           </label>

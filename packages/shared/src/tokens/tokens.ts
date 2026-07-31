@@ -10,23 +10,34 @@
 
 import { assessBrandColour } from './contrast.js';
 
-/** Product palette — fixed, not brand-controlled. */
+/**
+ * Product palette — fixed, not brand-controlled.
+ *
+ * Monochrome: the chrome is pure neutral, so the only colour on any screen is
+ * the one the brand chose. The prototype's sage tint was doing the opposite —
+ * competing with the brand colour on every surface.
+ *
+ * Status colours stay chromatic on purpose. They are the one place colour
+ * carries meaning rather than style: an overdue invoice reading the same grey
+ * as a paid one loses information the neutral scale cannot give back.
+ */
 export const palette = {
-  // Surfaces, sage-tinted neutrals from the prototype.
-  canvas: '#EDF1EE',
+  // Surfaces.
+  canvas: '#FAFAFA',
   surface: '#FFFFFF',
-  surfaceMuted: '#F5F7F5',
-  surfaceSunken: '#E7EBE8',
+  surfaceMuted: '#F5F5F5',
+  surfaceSunken: '#EBEBEB',
 
   // Lines.
-  border: '#D9E2DA',
-  borderStrong: '#A9B8AE',
+  border: '#E5E5E5',
+  borderStrong: '#A3A3A3',
 
-  // Ink.
-  ink: '#132119',
-  inkStrong: '#16261F',
-  inkMuted: '#5B6B63',
-  inkSubtle: '#7C887F',
+  // Ink. inkSubtle is the lightest that still clears 4.5:1 on white — anything
+  // paler is decoration, not text (NFR-USE-004).
+  ink: '#0A0A0A',
+  inkStrong: '#171717',
+  inkMuted: '#525252',
+  inkSubtle: '#737373',
   inkInverse: '#FFFFFF',
 
   // Status. Also used for invoice state chips.
@@ -38,14 +49,21 @@ export const palette = {
   dangerSurface: '#F9E7E5',
   info: '#3A6FA8',
   infoSurface: '#E7EEF6',
-  accent: '#2D6A6A',
-  accentSurface: '#E1E7E2',
+  // Neutral rather than status-coloured: accent is chrome, not meaning.
+  accent: '#171717',
+  accentSurface: '#F5F5F5',
 } as const;
 
 export type PaletteToken = keyof typeof palette;
 
-/** Default brand colours offered in the brand editor's swatch picker. */
+/**
+ * Default brand colours offered in the brand editor's swatch picker. Black
+ * leads because it is the product default — a brand that expresses no
+ * preference renders as monochrome as the chrome around it, rather than
+ * inheriting some arbitrary hue.
+ */
 export const BRAND_COLOUR_PRESETS = [
+  '#0A0A0A',
   '#2D6A6A',
   '#3A6FA8',
   '#C97A2B',
@@ -53,6 +71,14 @@ export const BRAND_COLOUR_PRESETS = [
   '#1F8B5C',
   '#C0473D',
 ] as const;
+
+/**
+ * What a brand gets when it has expressed no preference. Widened to `string`
+ * deliberately — call sites assign it into a brand colour that is about to be
+ * replaced by a real one, and the literal type from the `as const` array above
+ * would make every one of those a type error.
+ */
+export const DEFAULT_BRAND_COLOUR: string = BRAND_COLOUR_PRESETS[0];
 
 export const spacing = {
   0: '0px',
@@ -93,9 +119,9 @@ export const typography = {
 } as const;
 
 export const shadows = {
-  sm: '0 1px 2px rgba(19, 33, 25, 0.06)',
-  md: '0 2px 8px rgba(19, 33, 25, 0.08)',
-  lg: '0 8px 24px rgba(19, 33, 25, 0.12)',
+  sm: '0 1px 2px rgba(0, 0, 0, 0.06)',
+  md: '0 2px 8px rgba(0, 0, 0, 0.08)',
+  lg: '0 8px 24px rgba(0, 0, 0, 0.12)',
 } as const;
 
 /** Invoice status → palette tokens, so every surface renders a status alike. */

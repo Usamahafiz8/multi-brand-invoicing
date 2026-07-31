@@ -2,8 +2,8 @@ import Link from 'next/link';
 import { BrandTheme } from '@/components/brand-theme';
 import { ApiError, listBrands, listCustomers } from '@/lib/api';
 import { InvoiceForm } from './invoice-form';
+import { DEFAULT_BRAND_COLOUR } from '@fenwick/shared/tokens';
 
-const FALLBACK_THEME_COLOUR = '#16261F';
 
 export default async function NewInvoicePage({
   searchParams,
@@ -27,7 +27,7 @@ export default async function NewInvoicePage({
   }
 
   let brandName = brandId;
-  let themeColour = FALLBACK_THEME_COLOUR;
+  let themeColour = DEFAULT_BRAND_COLOUR;
   try {
     const brands = await listBrands();
     const brand = brands.find((b) => b.id === brandId);

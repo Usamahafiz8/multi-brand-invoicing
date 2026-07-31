@@ -68,8 +68,15 @@ export function mix(from: string | Rgb, to: string | Rgb, amount: number): Rgb {
   };
 }
 
+/**
+ * Mirrors palette.ink. Duplicated rather than imported because tokens.ts
+ * imports *this* module — the dependency only runs one way, and a second
+ * literal is cheaper than the cycle. The token test pins the two together.
+ */
+export const DEFAULT_INK = '#0A0A0A';
+
 /** Whichever of white or the given ink reads better on `background`. */
-export function foregroundOn(background: string, ink = '#132119'): string {
+export function foregroundOn(background: string, ink = DEFAULT_INK): string {
   const onWhite = contrastRatio(background, '#FFFFFF');
   const onInk = contrastRatio(background, ink);
   return onWhite >= onInk ? '#FFFFFF' : ink;
@@ -142,7 +149,7 @@ export function assessBrandColour(
   options: { readonly surface?: string; readonly ink?: string } = {},
 ): BrandColourAssessment {
   const surface = options.surface ?? '#FFFFFF';
-  const ink = options.ink ?? '#132119';
+  const ink = options.ink ?? DEFAULT_INK;
 
   const onBrand = foregroundOn(brandColour, ink);
   const onBrandRatio = Number(contrastRatio(brandColour, onBrand).toFixed(2));
