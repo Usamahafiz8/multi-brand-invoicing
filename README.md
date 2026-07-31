@@ -14,22 +14,37 @@ pnpm dev
 
 | Surface     | URL                          | Notes                                   |
 | ----------- | ---------------------------- | --------------------------------------- |
-| Admin app   | http://localhost:3000        | See "No login yet" below                |
+| Admin app   | http://localhost:3000        | Sign-in required — see below            |
 | Payment app | http://localhost:3001        | Anonymous, strict CSP                   |
 | API         | http://localhost:4000/health | Modular monolith                        |
 | Mail        | http://localhost:1080        | Every outbound message is captured here |
 
-**No login yet.** FR-AUTH-001 (real sign-in) is not built in `apps/admin` —
-there is no `/login` page. The seed prints a fixed developer session token,
-and `apps/admin/src/lib/api.ts` attaches it as a bearer token on every
-server-side request whenever `DEV_API_BEARER_TOKEN` is set in `.env` (already
-set by `setup:local`). This is a stopgap for exercising the admin screens
-locally, not an auth system — delete it the moment real sign-in exists. The
-same token works directly against the API:
+**Signing in.** Every page of `apps/admin` is behind `/login` (FR-AUTH-001).
+Use any seeded address with the password `db:seed` prints — `pnpm db:seed`
+creates one user per role, so signing in as each is how you exercise the
+permission matrix:
+
+| Email                                | Role           | Brands                      |
+| ------------------------------------ | -------------- | --------------------------- |
+| owner@fenwickholdings.test            | MERCHANT_OWNER | all                         |
+| admin@fenwickholdings.test            | MERCHANT_ADMIN | all                         |
+| brand.admin@fenwickholdings.test      | BRAND_ADMIN    | Solstice, Meridian          |
+| finance@fenwickholdings.test          | FINANCE_USER   | Solstice, Meridian, Cobalt  |
+| sales@fenwickholdings.test            | SALES_USER     | Solstice                    |
+| readonly@fenwickholdings.test         | READ_ONLY      | Solstice, Cobalt            |
+
+The admin app is a back-end-for-front-end: `POST /auth/login` returns the
+session token, the app stores it in its own httpOnly cookie, and replays it
+upstream from the server. The token never reaches the browser.
+
+To call the API directly, the seed also writes a long-lived session:
 
 ```bash
 curl -H "Authorization: Bearer <token printed by db:seed>" http://localhost:4000/health
 ```
+
+Five failed sign-ins within fifteen minutes lock an account for thirty
+(FR-AUTH-002). To clear a lock while developing, re-run `pnpm db:seed`.
 
 **If a port is already taken** by something else on your machine, override it
 rather than fighting the other process:
@@ -195,5 +210,8 @@ These are decisions or dependencies that are not ours to make up:
 - **Wallet and check payment are not wired up.** `PaymentMethod` includes
   `WALLET` and `CHECK`, and the domain logic handles them, but only `CARD`
   and `ACH` are offered on the actual payment page.
-- **No real login (`apps/admin`).** See "No login yet" in Quick start — the
-  dev bearer token is a stopgap, not FR-AUTH-001.
+- **Password lifecycle is not built.** Sign-in, lockout, audit and sign-out
+  exist (FR-AUTH-001..004, 010); forgotten-password (FR-AUTH-005/006), change
+  password (007), the configurable password policy (008), idle-session expiry
+  (009) and two-factor (012/013) do not. `loginSchema` already accepts a
+  `totp` field and the `user.totp_secret` column exists; nothing reads either.

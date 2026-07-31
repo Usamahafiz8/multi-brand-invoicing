@@ -4,6 +4,7 @@ import { AccountingModule } from './adapters/accounting/accounting.module.js';
 import { GatewayModule } from './adapters/gateway/gateway.module.js';
 import { MailModule } from './adapters/mail/mail.module.js';
 import { StorageModule } from './adapters/storage/storage.module.js';
+import { AuthModule } from './auth/auth.module.js';
 import { BrandsModule } from './brands/brands.module.js';
 import { ConfigModule } from './config/config.module.js';
 import { CustomersModule } from './customers/customers.module.js';
@@ -41,6 +42,7 @@ import { TenancyModule } from './tenancy/tenancy.module.js';
     AccountingModule,
     GatewayModule,
     HealthModule,
+    AuthModule,
     BrandsModule,
     CustomersModule,
     InvoicesModule,

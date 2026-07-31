@@ -3,8 +3,9 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { CreditCard, LayoutDashboard, Plug, ScrollText, Users } from 'lucide-react';
-import type { Brand } from '@/lib/api';
+import { CreditCard, LayoutDashboard, LogOut, Plug, ScrollText, Users } from 'lucide-react';
+import { logoutAction } from '@/app/(app)/logout-action';
+import type { Brand, CurrentUser } from '@/lib/api';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -23,7 +24,15 @@ const SETTINGS_ITEMS = [
  * comparing invoices across brands should not get bounced to the dashboard
  * every time they change brand.
  */
-export function AdminShell({ brands, children }: { brands: Brand[]; children: ReactNode }) {
+export function AdminShell({
+  brands,
+  user,
+  children,
+}: {
+  brands: Brand[];
+  user: CurrentUser;
+  children: ReactNode;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -100,9 +109,28 @@ export function AdminShell({ brands, children }: { brands: Brand[]; children: Re
         </nav>
 
         <div className="border-t border-border px-3 py-4">
+          <div className="px-3 pb-3">
+            <p className="truncate text-sm font-medium text-ink-strong" title={user.email}>
+              {user.name || user.email}
+            </p>
+            <p className="text-xs text-ink-subtle">{user.role.replace(/_/g, ' ').toLowerCase()}</p>
+          </div>
+
+          {/* A form, not a link: signing out revokes the session server-side, and
+              that is a state change no GET should perform (FR-AUTH-010). */}
+          <form action={logoutAction}>
+            <button
+              type="submit"
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-ink-muted hover:bg-surface-muted hover:text-ink-strong"
+            >
+              <LogOut className="h-4 w-4" aria-hidden />
+              Sign out
+            </button>
+          </form>
+
           <Link
             href="/status"
-            className="block rounded-md px-3 py-2 text-xs text-ink-subtle hover:text-ink-strong"
+            className="mt-1 block rounded-md px-3 py-2 text-xs text-ink-subtle hover:text-ink-strong"
           >
             System status
           </Link>

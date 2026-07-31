@@ -1,14 +1,13 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { API_URL } from '@/lib/api';
-
-const DEV_BEARER = process.env['DEV_API_BEARER_TOKEN'];
+import { readSessionToken } from '@/lib/session';
 
 /**
  * The activity feed polls this from the browser every few seconds so a pull
- * in progress is visible without a manual reload. The real API's bearer
- * token is server-only (never shipped to the client bundle), so the browser
- * cannot call it directly — this proxies the one read it needs, the same
- * pattern as the OAuth connect redirect.
+ * in progress is visible without a manual reload. The session token lives in
+ * an httpOnly cookie the browser cannot read, so the browser cannot call the
+ * API directly — this proxies the one read it needs, attaching the token
+ * server-side, the same pattern as the OAuth connect redirect.
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const brandId = request.nextUrl.searchParams.get('brandId');
@@ -16,8 +15,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ message: 'missing brandId' }, { status: 400 });
   }
 
+  const token = await readSessionToken();
+  if (!token) return NextResponse.json({ message: 'not signed in' }, { status: 401 });
+
   const upstream = await fetch(`${API_URL}/brands/${brandId}/integrations/zoho/activity`, {
-    headers: DEV_BEARER ? { Authorization: `Bearer ${DEV_BEARER}` } : {},
+    headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
   });
   const body = await upstream.text();

@@ -1,20 +1,17 @@
 /**
  * The admin app's connection to the API.
  *
- * Session cookies travel cross-origin, so every request sends credentials. The
- * API is a separate deployment (TDD-001 ADR-002), which is why this is a fetch
- * client rather than a direct database call from a server component.
+ * This app is a back-end-for-front-end: every call below runs on the server, and
+ * the session token is read from this origin's httpOnly cookie and replayed
+ * upstream as a bearer token. The API is a separate deployment (TDD-001
+ * ADR-002), which is why this is a fetch client rather than a direct database
+ * call from a server component, and why a cookie set by the API cannot simply be
+ * forwarded — see lib/session.ts.
  */
+
+import { readSessionToken } from './session';
 
 const API_URL = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000';
-
-/**
- * Stopgap for FR-AUTH-001: apps/admin has no login flow yet, so there is no
- * session cookie to send. Server Components attach this bearer token instead,
- * matching the fixed session the seed script writes. Delete this the moment
- * real sign-in exists — it must never be set outside local development.
- */
-const DEV_BEARER = process.env['DEV_API_BEARER_TOKEN'];
 
 export class ApiError extends Error {
   constructor(
@@ -27,18 +24,34 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A 401 from upstream means the session is gone — expired, revoked, or signed
+ * out in another tab. It is raised as its own type so the authenticated layout
+ * can send the user to /login instead of every page rendering "could not load".
+ */
+export class SessionExpiredError extends ApiError {
+  constructor(message = 'session expired') {
+    super(401, message);
+    this.name = 'SessionExpiredError';
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
-  init: RequestInit & { revalidate?: number } = {},
+  init: RequestInit & { revalidate?: number; token?: string | null } = {},
 ): Promise<T> {
-  const { revalidate, ...requestInit } = init;
+  const { revalidate, token, ...requestInit } = init;
+
+  // An explicit token is passed by the sign-in action, which runs before the
+  // cookie it is about to set exists.
+  const sessionToken = token === undefined ? await readSessionToken() : token;
 
   const response = await fetch(`${API_URL}${path}`, {
     ...requestInit,
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      ...(DEV_BEARER ? { Authorization: `Bearer ${DEV_BEARER}` } : {}),
+      ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
       ...requestInit.headers,
     },
     // Health and status must never be served from a cache; a stale "ok" is
@@ -53,6 +66,7 @@ export async function apiFetch<T>(
   if (!response.ok) {
     const message =
       (body as { message?: string } | null)?.message ?? `${response.status} ${response.statusText}`;
+    if (response.status === 401) throw new SessionExpiredError(message);
     throw new ApiError(response.status, message, body);
   }
 
@@ -82,6 +96,40 @@ export interface HealthResponse {
 
 export function getHealth(): Promise<HealthResponse> {
   return apiFetch<HealthResponse>('/health');
+}
+
+// --- Authentication (FR-AUTH) -------------------------------------------------
+
+export interface LoginResponse {
+  token: string;
+  expiresAt: string;
+  user: CurrentUser;
+}
+
+export interface CurrentUser {
+  id: string;
+  merchantId: string;
+  email: string;
+  name: string;
+  role: string;
+  assignedBrandIds: string[];
+}
+
+/** `token: null` because there is no session yet — this is the call that mints one. */
+export function login(email: string, password: string): Promise<LoginResponse> {
+  return apiFetch<LoginResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+    token: null,
+  });
+}
+
+export function logout(): Promise<void> {
+  return apiFetch<void>('/auth/logout', { method: 'POST' });
+}
+
+export function getCurrentUser(): Promise<CurrentUser> {
+  return apiFetch<CurrentUser>('/auth/me');
 }
 
 // --- Brands ------------------------------------------------------------------

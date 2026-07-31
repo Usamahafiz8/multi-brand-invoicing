@@ -1,13 +1,12 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { API_URL } from '@/lib/api';
-
-const DEV_BEARER = process.env['DEV_API_BEARER_TOKEN'];
+import { readSessionToken } from '@/lib/session';
 
 /**
  * The API's connect endpoint is authenticated (@RequirePermission) and issues
  * a redirect straight to Zoho's consent screen. A browser's top-level
  * navigation cannot carry a custom Authorization header, so this route
- * fetches that redirect server-side — where the dev bearer token can be
+ * fetches that redirect server-side — where the session token can be
  * attached, same as every Server Action in this app — and re-issues it to
  * the browser as a plain redirect to accounts.zoho.com, which needs none.
  */
@@ -17,8 +16,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return NextResponse.redirect(new URL('/settings/zoho?error=missing_brand', request.url));
   }
 
+  const token = await readSessionToken();
+  if (!token) return NextResponse.redirect(new URL('/login', request.url));
+
   const upstream = await fetch(`${API_URL}/brands/${brandId}/integrations/zoho/connect`, {
-    headers: DEV_BEARER ? { Authorization: `Bearer ${DEV_BEARER}` } : {},
+    headers: { Authorization: `Bearer ${token}` },
     redirect: 'manual',
   });
 
