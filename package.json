@@ -23,6 +23,8 @@
     "db:migrate": "pnpm --filter @fenwick/api db:migrate",
     "db:reset": "pnpm --filter @fenwick/api db:reset",
     "db:seed": "pnpm --filter @fenwick/api db:seed",
+    "gateway:mock": "node scripts/mock-numbers-gateway.mjs --verbose",
+    "gateway:demo": "node scripts/demo-numbers-gateway.mjs",
     "db:studio": "pnpm --filter @fenwick/api db:studio"
   },
   "devDependencies": {

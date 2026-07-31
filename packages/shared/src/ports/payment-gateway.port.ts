@@ -1,13 +1,19 @@
 /**
  * PaymentGatewayPort (TDD-001 §10.2).
  *
- * The domain depends on this interface; adapters implement it. This boundary is
- * why the invoicing, calculation and state-machine work is not blocked on
- * DEP-01 — Numbers Gateway's contract is unverified, so only the adapter is
- * blocked. Everything else builds and tests against FakeGateway.
+ * The domain depends on this interface; adapters implement it. That boundary is
+ * what let the invoicing, calculation and state-machine work proceed against
+ * FakeGateway while Numbers Gateway's contract was still unread (DEP-01, since
+ * resolved), and it is what lets a second provider be added without the domain
+ * learning a new vocabulary.
  *
- * Operations must be idempotent on `idempotencyKey`: a repeated call with the
- * same key returns the original intent rather than charging twice.
+ * Operations SHOULD be idempotent on `idempotencyKey`: a repeated call with the
+ * same key returns the original intent rather than charging twice. FakeGateway
+ * honours this exactly. Numbers Gateway does NOT — its API has no request-level
+ * idempotency of any kind — so its adapter can only dedupe against calls it has
+ * already seen in this process and must never blind-retry a charge whose
+ * outcome it did not observe. Callers must treat a failed charge as
+ * indeterminate and reconcile rather than retry.
  */
 
 import type { CurrencyCode, Minor } from '../money/money.js';
@@ -21,6 +27,31 @@ export const PAYMENT_INTENT_STATUSES = [
   'CANCELLED',
 ] as const;
 export type PaymentIntentStatus = (typeof PAYMENT_INTENT_STATUSES)[number];
+
+/**
+ * The instrument being charged, as a provider-side handle.
+ *
+ * Raw card data never appears here and never reaches our servers: `NONCE` is a
+ * hosted-tokenization token minted by the gateway's own iframed fields, and
+ * `WALLET` is the encrypted payload a wallet hands the page. Keeping the PAN
+ * out of this type is what keeps the API inside PCI SAQ A scope.
+ *
+ * Optional because FakeGateway invents its own instrument; a real gateway
+ * cannot charge without one and its adapter rejects the call.
+ */
+export interface PaymentSourceInput {
+  readonly kind: 'NONCE' | 'WALLET' | 'STORED';
+  /** Hosted-tokenization nonce, wallet payload, or stored-method reference. */
+  readonly token: string;
+  readonly walletProvider?: 'GOOGLE_PAY' | 'APPLE_PAY';
+  /** Returned alongside a hosted-tokenization nonce; some gateways require it. */
+  readonly expiryMonth?: number;
+  readonly expiryYear?: number;
+  readonly avsZip?: string;
+  readonly avsAddress?: string;
+  /** Card funding source, where the wallet discloses it. 'C'redit or 'D'ebit. */
+  readonly binType?: 'C' | 'D';
+}
 
 export interface CreateIntentInput {
   /** Hash of (invoice id, amount, attempt nonce). See TDD-001 §8.3. */
@@ -37,6 +68,8 @@ export interface CreateIntentInput {
   };
   /** Where the gateway returns the customer after a redirect flow. */
   readonly returnUrl: string;
+  /** The tokenized instrument to charge. See PaymentSourceInput. */
+  readonly source?: PaymentSourceInput;
   readonly metadata?: Readonly<Record<string, string>>;
 }
 

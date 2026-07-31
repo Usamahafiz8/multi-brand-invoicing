@@ -54,8 +54,23 @@ const envSchema = z
     S3_ACCESS_KEY_ID: z.string().optional(),
     S3_SECRET_ACCESS_KEY: z.string().optional(),
 
+    // Numbers Gateway authenticates with HTTP Basic over a *source key and its
+    // PIN* — not a bearer token — so both halves are required. The names mirror
+    // the provider's own curl examples (`--user 'API_KEY:API_KEY_PIN'`).
+    // Sandbox base: https://api.sandbox.numbersgateway.com/api/v2
     NUMBERS_API_BASE_URL: z.string().optional(),
     NUMBERS_API_KEY: z.string().optional(),
+    NUMBERS_API_KEY_PIN: z.string().optional(),
+    // Public tokenization source key (begins `pk_`). Safe to hand to the
+    // browser — it can only mint nonces, never move money — and the payment
+    // page cannot render hosted card fields without it.
+    NUMBERS_TOKENIZATION_KEY: z.string().optional(),
+    NUMBERS_TOKENIZATION_LIBRARY_URL: z
+      .string()
+      .url()
+      .default('https://tokenization.sandbox.numbersgateway.com/tokenization/v0.3'),
+    // Per-endpoint signature key from Control Panel; HMAC-SHA256 over the raw
+    // webhook body, compared against the X-Signature header.
     NUMBERS_WEBHOOK_SECRET: z.string().optional(),
 
     ZOHO_CLIENT_ID: z.string().optional(),
@@ -85,6 +100,14 @@ const envSchema = z
     if (env.PAYMENT_GATEWAY_DRIVER === 'numbers') {
       require(env.NUMBERS_API_BASE_URL, 'NUMBERS_API_BASE_URL', 'when PAYMENT_GATEWAY_DRIVER=numbers');
       require(env.NUMBERS_API_KEY, 'NUMBERS_API_KEY', 'when PAYMENT_GATEWAY_DRIVER=numbers');
+      require(env.NUMBERS_API_KEY_PIN, 'NUMBERS_API_KEY_PIN', 'when PAYMENT_GATEWAY_DRIVER=numbers');
+      // Without this the payment page has no way to collect a card at all: the
+      // API refuses card charges that carry no tokenized source.
+      require(
+        env.NUMBERS_TOKENIZATION_KEY,
+        'NUMBERS_TOKENIZATION_KEY',
+        'when PAYMENT_GATEWAY_DRIVER=numbers',
+      );
       require(env.NUMBERS_WEBHOOK_SECRET, 'NUMBERS_WEBHOOK_SECRET', 'when PAYMENT_GATEWAY_DRIVER=numbers');
     }
     if (env.ACCOUNTING_DRIVER === 'zoho') {
