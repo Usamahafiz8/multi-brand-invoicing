@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import { CircleCheck, CircleDashed, ScrollText, Users, Wallet } from 'lucide-react';
 import { formatMinorForDisplay } from '@fenwick/shared/money';
 import { BrandTheme } from '@/components/brand-theme';
@@ -11,10 +12,10 @@ import {
   type Brand,
   type Invoice,
 } from '@/lib/api';
+import { DEFAULT_BRAND_COLOUR } from '@fenwick/shared/tokens';
 
 export const dynamic = 'force-dynamic';
 
-const FALLBACK_THEME_COLOUR = '#16261F';
 const OPEN_STATUSES = new Set(['SENT', 'VIEWED', 'PENDING_PAYMENT', 'PARTIALLY_PAID']);
 
 function statusTone(status: string): string {
@@ -68,6 +69,12 @@ export default async function DashboardPage({
     brandsError = cause instanceof ApiError ? cause.message : String(cause);
   }
 
+  // First run: a dashboard with nothing to put on it is a dead end. Only when
+  // the list actually came back empty — a role that cannot read brands lands in
+  // brandsError above, and must not be sent to a screen it cannot use either.
+  // Outside the try/catch, because redirect() signals by throwing.
+  if (!brandsError && brands.length === 0) redirect('/onboarding');
+
   const activeBrand = brands.find((b) => b.id === params.brandId) ?? brands[0] ?? null;
 
   let customerTotal = 0;
@@ -104,7 +111,7 @@ export default async function DashboardPage({
   const recentInvoices = invoices.slice(0, 5);
 
   return (
-    <BrandTheme brandColour={activeBrand?.themeColor ?? FALLBACK_THEME_COLOUR}>
+    <BrandTheme brandColour={activeBrand?.themeColor ?? DEFAULT_BRAND_COLOUR}>
       <main className="mx-auto max-w-5xl px-6 py-12">
         <header className="mb-8">
           <p className="text-sm uppercase tracking-widest text-ink-subtle">
@@ -122,16 +129,6 @@ export default async function DashboardPage({
         {brandsError ? (
           <div className="rounded-md bg-danger-surface p-4 text-sm text-danger">
             Could not load brands: {brandsError}
-          </div>
-        ) : brands.length === 0 ? (
-          <div className="rounded-lg border border-border bg-surface p-8 text-center">
-            <p className="text-sm text-ink-muted">No brands exist yet.</p>
-            <Link
-              href="/brands/new"
-              className="mt-4 inline-block rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-foreground"
-            >
-              Create your first brand
-            </Link>
           </div>
         ) : dataError ? (
           <div className="rounded-md bg-danger-surface p-4 text-sm text-danger">

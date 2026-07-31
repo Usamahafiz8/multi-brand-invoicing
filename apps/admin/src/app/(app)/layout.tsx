@@ -1,8 +1,7 @@
 import { Suspense } from 'react';
-import { redirect } from 'next/navigation';
 import { AdminShell } from '@/components/admin-shell';
-import { getCurrentUser, listBrands, type Brand, type CurrentUser } from '@/lib/api';
-import { LOGIN_PATH } from '@/lib/session';
+import { requireUser } from '@/lib/auth';
+import { listBrands, type Brand } from '@/lib/api';
 
 /**
  * The authenticated half of the app. Everything below this layout is behind a
@@ -14,15 +13,7 @@ import { LOGIN_PATH } from '@/lib/session';
  * cheap filter; this is the actual gate.
  */
 export default async function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
-  let user: CurrentUser;
-  try {
-    user = await getCurrentUser();
-  } catch {
-    // Any failure to establish who this is means no access. The cookie is left
-    // for /login to clear, so a momentary API outage does not silently sign
-    // everyone out of a session that is still perfectly valid.
-    redirect(`${LOGIN_PATH}?expired=1`);
-  }
+  const user = await requireUser();
 
   let brands: Brand[] = [];
   try {
