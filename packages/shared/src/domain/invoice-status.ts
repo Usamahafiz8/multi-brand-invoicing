@@ -47,7 +47,17 @@ export type InvoiceTransition = (typeof INVOICE_TRANSITIONS)[number];
 const ALLOWED: Record<InvoiceTransition, ReadonlySet<InvoiceStatus>> = {
   ISSUE: new Set<InvoiceStatus>(['DRAFT']),
   FIRST_VIEW: new Set<InvoiceStatus>(['SENT']),
-  INITIATE_PAYMENT: new Set<InvoiceStatus>(['SENT', 'VIEWED', 'PARTIALLY_PAID']),
+  // PENDING_PAYMENT is included, guarded below by `attemptsInFlight`. Without
+  // it, an invoice that reaches PENDING_PAYMENT and is never settled — an
+  // abandoned checkout, a pending ACH, or a record imported from an accounting
+  // system as simply "unpaid" — becomes permanently unpayable, which is the
+  // opposite of what that status is for.
+  INITIATE_PAYMENT: new Set<InvoiceStatus>([
+    'SENT',
+    'VIEWED',
+    'PARTIALLY_PAID',
+    'PENDING_PAYMENT',
+  ]),
   SETTLE_PARTIAL: new Set<InvoiceStatus>(['PENDING_PAYMENT', 'PARTIALLY_PAID']),
   SETTLE_FULL: new Set<InvoiceStatus>(['PENDING_PAYMENT', 'PARTIALLY_PAID']),
   PAYMENT_FAILED: new Set<InvoiceStatus>(['PENDING_PAYMENT']),
@@ -63,6 +73,14 @@ export interface TransitionContext {
   readonly balanceMinor: number;
   readonly settledMinor: number;
   readonly customerHasDeliverableEmail: boolean;
+  /**
+   * Payment attempts already open against this invoice — INITIATED or
+   * PROCESSING, i.e. money that may still move. Read only by INITIATE_PAYMENT,
+   * and only when re-entering from PENDING_PAYMENT, where it is the difference
+   * between a safe retry and a second charge. Absent is treated as none, which
+   * suits every caller that cannot be re-entering.
+   */
+  readonly attemptsInFlight?: number;
 }
 
 export type TransitionResult =
@@ -78,6 +96,7 @@ export type TransitionFailure =
   | 'BALANCE_NOT_CLEARED'
   | 'BALANCE_ALREADY_CLEARED'
   | 'SETTLED_PAYMENT_EXISTS'
+  | 'PAYMENT_IN_FLIGHT'
   | 'NO_PREVIOUS_STATUS';
 
 /**
@@ -114,6 +133,15 @@ export function evaluateTransition(
     case 'INITIATE_PAYMENT': {
       if (context.balanceMinor <= 0) {
         return refuse('ALREADY_SETTLED', 'the invoice balance is already cleared');
+      }
+      // Re-entering PENDING_PAYMENT is only safe once nothing is still open:
+      // starting a second charge alongside a live one is how a customer pays
+      // twice for the same invoice.
+      if (context.status === 'PENDING_PAYMENT' && (context.attemptsInFlight ?? 0) > 0) {
+        return refuse(
+          'PAYMENT_IN_FLIGHT',
+          'a payment attempt on this invoice has not finished yet',
+        );
       }
       return { ok: true, to: 'PENDING_PAYMENT' };
     }

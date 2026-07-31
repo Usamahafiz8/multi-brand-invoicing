@@ -12,15 +12,25 @@ export interface PullCounts {
   readonly payments: number;
 }
 
-/** Zoho's invoice status vocabulary onto ours. Zoho has no direct
- * counterpart to our overdue tracking (a separate boolean flag here, not a
- * status value) — "overdue" reads as PENDING_PAYMENT, same as "unpaid". */
+/**
+ * Zoho's invoice status vocabulary onto ours.
+ *
+ * "unpaid" and "overdue" both map to SENT, NOT to PENDING_PAYMENT. They mean
+ * "issued and awaiting payment"; PENDING_PAYMENT means something stricter here
+ * — a payment attempt is currently in flight — and it is the state
+ * INITIATE_PAYMENT transitions *into*. Importing straight into it made every
+ * unpaid Zoho invoice unpayable on the payment page.
+ *
+ * Zoho has no direct counterpart to our overdue tracking, which is a separate
+ * boolean flag rather than a status value, so "overdue" is carried across on
+ * that flag instead of being flattened into the status.
+ */
 const INVOICE_STATUS_MAP: Record<string, string> = {
   draft: 'DRAFT',
   sent: 'SENT',
   viewed: 'VIEWED',
-  unpaid: 'PENDING_PAYMENT',
-  overdue: 'PENDING_PAYMENT',
+  unpaid: 'SENT',
+  overdue: 'SENT',
   partially_paid: 'PARTIALLY_PAID',
   paid: 'PAID',
   void: 'CANCELLED',
@@ -220,6 +230,9 @@ export class ZohoPullService {
           | 'PARTIALLY_PAID'
           | 'PAID'
           | 'CANCELLED',
+        // Carried on the flag rather than the status, so "overdue" survives the
+        // import without making the invoice unpayable.
+        overdue: invoice.status === 'overdue',
         invoiceDate: new Date(invoice.date),
         dueDate: new Date(invoice.due_date),
         currency: invoice.currency_code,

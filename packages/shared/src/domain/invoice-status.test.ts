@@ -83,6 +83,46 @@ describe('INITIATE_PAYMENT', () => {
       code: 'ILLEGAL_FROM_STATUS',
     });
   });
+
+  // An invoice that reached PENDING_PAYMENT without ever settling — an
+  // abandoned checkout, or a record imported from an accounting system as
+  // "unpaid" — must remain payable. Refusing it strands the invoice forever.
+  it('is allowed from PENDING_PAYMENT when no attempt is still open', () => {
+    expect(
+      evaluateTransition('INITIATE_PAYMENT', {
+        ...base,
+        status: 'PENDING_PAYMENT',
+        attemptsInFlight: 0,
+      }),
+    ).toEqual({ ok: true, to: 'PENDING_PAYMENT' });
+  });
+
+  it('treats an absent attempt count as none open', () => {
+    expect(
+      evaluateTransition('INITIATE_PAYMENT', { ...base, status: 'PENDING_PAYMENT' }),
+    ).toEqual({ ok: true, to: 'PENDING_PAYMENT' });
+  });
+
+  it('refuses from PENDING_PAYMENT while an attempt is still in flight', () => {
+    expect(
+      evaluateTransition('INITIATE_PAYMENT', {
+        ...base,
+        status: 'PENDING_PAYMENT',
+        attemptsInFlight: 1,
+      }),
+    ).toMatchObject({ ok: false, code: 'PAYMENT_IN_FLIGHT' });
+  });
+
+  it('still refuses a re-entry once the balance is cleared', () => {
+    expect(
+      evaluateTransition('INITIATE_PAYMENT', {
+        ...base,
+        status: 'PENDING_PAYMENT',
+        balanceMinor: 0,
+        attemptsInFlight: 0,
+      }),
+    ).toMatchObject({ ok: false, code: 'ALREADY_SETTLED' });
+  });
 });
 
 describe('settlement', () => {
