@@ -11,6 +11,7 @@ import {
   type PaymentGatewayPort,
   type PaymentIntentStatus,
   type PaymentMethod,
+  type PaymentSourceInput,
   type PublicScope,
 } from '@fenwick/shared';
 import { ENV, type Env } from '../config/env.js';
@@ -48,6 +49,12 @@ export class PaymentsService {
     scope: PublicScope,
     method: PaymentMethod,
     attemptNonce: string,
+    /**
+     * The tokenized instrument, when the active gateway needs one. Passed
+     * straight through: it is opaque here by design, since understanding it
+     * would mean this service knew something about card data.
+     */
+    source?: PaymentSourceInput,
   ): Promise<PaymentAttemptResult> {
     const outcome = await this.prisma.withScope(scope, async (tx) => {
       const invoice = await tx.invoice.findFirst({
@@ -96,6 +103,14 @@ export class PaymentsService {
       }
 
       const originalStatus = invoice.status;
+
+      // Only consulted when re-entering from PENDING_PAYMENT, but counted
+      // unconditionally: the query is cheap and a stale zero would be the one
+      // value capable of authorising a double charge.
+      const attemptsInFlight = await tx.payment.count({
+        where: { invoiceId: invoice.id, status: { in: ['INITIATED', 'PROCESSING'] } },
+      });
+
       const initDecision = evaluateTransition('INITIATE_PAYMENT', {
         status: invoice.status,
         lineItemCount: invoice.lineItems.length,
@@ -103,6 +118,7 @@ export class PaymentsService {
         balanceMinor: Number(invoice.balanceMinor),
         settledMinor: 0,
         customerHasDeliverableEmail: Boolean(invoice.customer.email),
+        attemptsInFlight,
       });
       if (!initDecision.ok) throw new ConflictException(initDecision.message);
 
@@ -140,6 +156,7 @@ export class PaymentsService {
           description: `Invoice ${invoice.number}`,
           customer: { email: invoice.customer.email, name: null },
           returnUrl: `${this.env.PAYMENT_PUBLIC_URL}/i/${invoice.publicToken}`,
+          ...(source ? { source } : {}),
         });
       } catch (error) {
         // Transient (e.g. simulated timeout): the invoice stays in

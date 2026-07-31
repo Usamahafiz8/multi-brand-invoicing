@@ -34,6 +34,13 @@ export interface PublicInvoice {
     ach: boolean;
     check: boolean;
   };
+  /**
+   * Non-null when the active gateway requires hosted tokenization. The card
+   * fields are then iframes served by the gateway from its own origin, and this
+   * app only ever sees the nonce they mint — which is what keeps it inside PCI
+   * SAQ A. Null means the gateway mints its own instrument (FakeGateway).
+   */
+  tokenization: { libraryUrl: string; publicKey: string } | null;
 }
 
 export type InvoiceLookup =

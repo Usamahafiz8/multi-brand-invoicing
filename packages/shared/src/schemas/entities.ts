@@ -164,6 +164,28 @@ export type CustomerListQuery = z.infer<typeof customerListQuerySchema>;
 
 // --- Payment ---------------------------------------------------------------
 
+/**
+ * The tokenized instrument the customer is paying with.
+ *
+ * Every variant is a handle minted elsewhere — a hosted-tokenization nonce from
+ * the gateway's own iframes, or a wallet's encrypted payload. There is
+ * deliberately no field a card number could be placed in: if this schema could
+ * carry a PAN, the API would be inside PCI SAQ D and the whole hosted-fields
+ * design would be pointless.
+ */
+export const paymentSourceSchema = z.object({
+  kind: z.enum(['NONCE', 'WALLET', 'STORED']),
+  // Wallet payloads are encrypted JSON blobs and run to a few kilobytes.
+  token: z.string().min(1).max(8192),
+  walletProvider: z.enum(['GOOGLE_PAY', 'APPLE_PAY']).optional(),
+  expiryMonth: z.number().int().min(1).max(12).optional(),
+  expiryYear: z.number().int().min(2020).max(9999).optional(),
+  avsZip: z.string().max(20).optional(),
+  avsAddress: z.string().max(255).optional(),
+  binType: z.enum(['C', 'D']).optional(),
+});
+export type PaymentSource = z.infer<typeof paymentSourceSchema>;
+
 export const paymentIntentRequestSchema = z.object({
   publicToken: z.string().regex(/^[0-9a-f]{32}$/),
   method: paymentMethodSchema,
@@ -171,6 +193,8 @@ export const paymentIntentRequestSchema = z.object({
   amount: decimalAmountStringSchema.optional(),
   /** Client-generated, so a double submit collapses to one charge. */
   attemptNonce: z.string().min(8).max(64),
+  /** Absent for gateways that mint their own instrument, e.g. FakeGateway. */
+  source: paymentSourceSchema.optional(),
 });
 export type PaymentIntentRequest = z.infer<typeof paymentIntentRequestSchema>;
 

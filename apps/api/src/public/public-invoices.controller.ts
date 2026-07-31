@@ -18,7 +18,11 @@ import { Public } from '../tenancy/authorisation.js';
 import { PaymentsService, type PaymentAttemptResult } from '../payments/payments.service.js';
 import { PublicInvoicesService, type PublicInvoiceView } from './public-invoices.service.js';
 
-const createIntentBodySchema = paymentIntentRequestSchema.pick({ method: true, attemptNonce: true });
+const createIntentBodySchema = paymentIntentRequestSchema.pick({
+  method: true,
+  attemptNonce: true,
+  source: true,
+});
 type CreateIntentBody = z.infer<typeof createIntentBodySchema>;
 
 /**
@@ -56,7 +60,7 @@ export class PublicInvoicesController {
     const scope = await this.publicInvoices.resolveScope(token);
     if (!scope) throw new NotFoundException('this payment link is no longer valid');
 
-    return this.payments.createIntent(scope, body.method, body.attemptNonce);
+    return this.payments.createIntent(scope, body.method, body.attemptNonce, body.source);
   }
 
   @Post('webhooks/fake-gateway')

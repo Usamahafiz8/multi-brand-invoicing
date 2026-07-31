@@ -27,7 +27,7 @@ describeWithDb('PublicInvoicesService', () => {
   const queue = createFakeQueueService();
   const customers = new CustomersService(prisma, queue);
   const invoices = new InvoicesService(prisma, queue);
-  const publicInvoices = new PublicInvoicesService(prisma);
+  const publicInvoices = new PublicInvoicesService(prisma, env!);
   const owner = new PrismaClient({ datasources: { db: { url: env!.DIRECT_DATABASE_URL ?? env!.DATABASE_URL } } });
 
   let solsticeId = '';

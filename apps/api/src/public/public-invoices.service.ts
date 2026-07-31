@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { evaluateTransition, formatQuantity, type PublicScope } from '@fenwick/shared';
 import { PrismaService } from '../infra/prisma/prisma.service.js';
+import { ENV, type Env } from '../config/env.js';
 
 export interface PublicInvoiceView {
   number: string;
@@ -30,6 +31,17 @@ export interface PublicInvoiceView {
     ach: boolean;
     check: boolean;
   };
+  /**
+   * How the payment page must collect a card. Non-null means the active gateway
+   * requires hosted tokenization: the page loads this library and renders the
+   * gateway's own iframed fields, so the card number never touches our origin.
+   * Null means the gateway mints its own instrument (FakeGateway locally) and
+   * the page may use a plain demo form.
+   *
+   * `publicKey` is a `pk_` tokenization key. It is safe to publish — it can
+   * only mint nonces, never move money.
+   */
+  tokenization: { libraryUrl: string; publicKey: string } | null;
 }
 
 /**
@@ -40,7 +52,23 @@ export interface PublicInvoiceView {
  */
 @Injectable()
 export class PublicInvoicesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(ENV) private readonly env: Env,
+  ) {}
+
+  /**
+   * Hosted tokenization is required exactly when a real gateway is bound and a
+   * public key is configured. Deriving it from configuration rather than a
+   * per-brand flag means the payment page cannot be left rendering a plain card
+   * form against a gateway that would reject it.
+   */
+  private tokenizationConfig(): PublicInvoiceView['tokenization'] {
+    if (this.env.PAYMENT_GATEWAY_DRIVER !== 'numbers') return null;
+    const publicKey = this.env.NUMBERS_TOKENIZATION_KEY;
+    if (!publicKey) return null;
+    return { libraryUrl: this.env.NUMBERS_TOKENIZATION_LIBRARY_URL, publicKey };
+  }
 
   /** Null covers both "no such token" and "deactivated" — deliberately
    * indistinguishable to the caller (TDD-001 §12.1 step 3). */
@@ -134,6 +162,7 @@ export class PublicInvoicesService {
           ach: invoice.brand.settings?.achEnabled ?? false,
           check: invoice.brand.settings?.checkEnabled ?? false,
         },
+        tokenization: this.tokenizationConfig(),
       };
     });
   }
