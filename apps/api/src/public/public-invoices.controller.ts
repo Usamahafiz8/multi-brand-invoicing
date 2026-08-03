@@ -67,6 +67,26 @@ export class PublicInvoicesController {
   @Public()
   @HttpCode(200)
   async fakeGatewayWebhook(@Req() request: RawBodyRequest<Request>): Promise<{ received: true }> {
+    return this.receiveWebhook(request);
+  }
+
+  /**
+   * Stripe's endpoint. A separate path only because a provider's dashboard is
+   * configured with one URL and its signature scheme differs — the handling
+   * below is identical, and verification runs against whichever adapter the
+   * driver bound, so pointing Stripe here while the driver is `numbers` fails
+   * the signature check rather than half-processing the event.
+   */
+  @Post('webhooks/stripe')
+  @Public()
+  @HttpCode(200)
+  async stripeWebhook(@Req() request: RawBodyRequest<Request>): Promise<{ received: true }> {
+    return this.receiveWebhook(request);
+  }
+
+  private async receiveWebhook(request: RawBodyRequest<Request>): Promise<{ received: true }> {
+    // rawBody, not the parsed body: every provider signs the exact bytes it
+    // sent, and re-serialising the JSON would change the hash.
     if (!request.rawBody) {
       throw new BadRequestException('missing request body');
     }

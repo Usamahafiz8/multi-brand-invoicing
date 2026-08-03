@@ -148,6 +148,26 @@ silently returning nothing.
 adapters implement them and are bound in one place. This is why the unverified
 Numbers Gateway contract blocks one file instead of the payment workstream.
 
+Three gateway adapters exist, selected by `PAYMENT_GATEWAY_DRIVER`:
+
+| Driver    | Idempotency                | Amounts        | Notes                                    |
+| --------- | -------------------------- | -------------- | ---------------------------------------- |
+| `fake`    | exact, in-process          | minor units    | default; refused in production           |
+| `numbers` | **none** — API has no keys | decimal dollars | an unanswered charge must be reconciled  |
+| `stripe`  | `Idempotency-Key`, 24h      | minor units    | an unanswered charge is safe to retry    |
+
+That idempotency column is the one difference that changes caller obligations.
+A Numbers charge whose response was never seen is INDETERMINATE and is raised
+as `PERMANENT` so nothing retries it automatically; the same failure on Stripe
+is `TRANSIENT`, because replaying the key either reaches Stripe for the first
+time or returns the answer it already gave.
+
+Stripe webhooks go to `POST /public/webhooks/stripe`. Locally:
+
+```bash
+stripe listen --forward-to localhost:4000/public/webhooks/stripe
+```
+
 **No local path reaches a real provider.** Gateway, accounting, mail and storage
 all resolve to in-repo fakes or local containers. The environment schema refuses
 to boot production with a fake bound.

@@ -35,7 +35,7 @@ const envSchema = z
         message: 'CREDENTIAL_ENCRYPTION_KEY must be 32 bytes, base64 encoded',
       }),
 
-    PAYMENT_GATEWAY_DRIVER: z.enum(['fake', 'numbers']).default('fake'),
+    PAYMENT_GATEWAY_DRIVER: z.enum(['fake', 'numbers', 'stripe']).default('fake'),
     ACCOUNTING_DRIVER: z.enum(['fake', 'zoho']).default('fake'),
     MAIL_DRIVER: z.enum(['smtp', 'postmark', 'console']).default('console'),
     STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
@@ -73,6 +73,20 @@ const envSchema = z
     // webhook body, compared against the X-Signature header.
     NUMBERS_WEBHOOK_SECRET: z.string().optional(),
 
+    // Stripe. Unlike Numbers, the secret key is a bearer token and carries its
+    // own environment: sk_test_ against test mode, sk_live_ against real money.
+    // The refinement below refuses a live key outside production.
+    STRIPE_API_BASE_URL: z.string().url().optional(),
+    STRIPE_SECRET_KEY: z.string().optional(),
+    // Shipped to the browser so Stripe.js can mount Elements. Publishable by
+    // design — it can only create PaymentMethods, never move money.
+    STRIPE_PUBLISHABLE_KEY: z.string().optional(),
+    // Endpoint signing secret (whsec_...). Dashboard > Developers > Webhooks.
+    STRIPE_WEBHOOK_SECRET: z.string().optional(),
+    // Pinned so Stripe's own upgrades cannot change the response shape the
+    // adapter parses. Raise deliberately, with the changelog open.
+    STRIPE_API_VERSION: z.string().default('2024-06-20'),
+
     ZOHO_CLIENT_ID: z.string().optional(),
     ZOHO_CLIENT_SECRET: z.string().optional(),
     ZOHO_REDIRECT_URI: z.string().optional(),
@@ -109,6 +123,32 @@ const envSchema = z
         'when PAYMENT_GATEWAY_DRIVER=numbers',
       );
       require(env.NUMBERS_WEBHOOK_SECRET, 'NUMBERS_WEBHOOK_SECRET', 'when PAYMENT_GATEWAY_DRIVER=numbers');
+    }
+    if (env.PAYMENT_GATEWAY_DRIVER === 'stripe') {
+      require(env.STRIPE_SECRET_KEY, 'STRIPE_SECRET_KEY', 'when PAYMENT_GATEWAY_DRIVER=stripe');
+      // Without this every webhook is rejected unverified, so a payment
+      // confirmed by Stripe would never settle on our side.
+      require(
+        env.STRIPE_WEBHOOK_SECRET,
+        'STRIPE_WEBHOOK_SECRET',
+        'when PAYMENT_GATEWAY_DRIVER=stripe',
+      );
+      // The payment page cannot mount Stripe Elements without it, so a card
+      // could never be collected at all.
+      require(
+        env.STRIPE_PUBLISHABLE_KEY,
+        'STRIPE_PUBLISHABLE_KEY',
+        'when PAYMENT_GATEWAY_DRIVER=stripe',
+      );
+
+      // A live key outside production is how a test run takes real money.
+      if (env.STRIPE_SECRET_KEY?.startsWith('sk_live_') && env.APP_ENV !== 'production') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['STRIPE_SECRET_KEY'],
+          message: `a live Stripe key (sk_live_) must not be used with APP_ENV=${env.APP_ENV}`,
+        });
+      }
     }
     if (env.ACCOUNTING_DRIVER === 'zoho') {
       require(env.ZOHO_CLIENT_ID, 'ZOHO_CLIENT_ID', 'when ACCOUNTING_DRIVER=zoho');
